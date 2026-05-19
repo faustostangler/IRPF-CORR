@@ -1,7 +1,9 @@
 import os
 import json
+import time
 from irpf_b3.companies import get_filtered_companies
 from irpf_b3.documents import process_company_documents
+from irpf_b3.helpers import progress
 
 # --- GLOBAL CONSTANTS & CONFIGURATIONS ---
 TICKERS_FILENAME = "tickers.txt"
@@ -17,12 +19,14 @@ def main():
     # companies = get_filtered_companies(tickers_path)
     companies = [{"ticker": "WEGE3", "cvm": "5410", "trading_name": "WEG"}]
 
-    print(f"\nProcessing documents for {len(companies)} companies...")
+    total = len(companies)
+    print(f"\nProcessing documents for {total} companies...")
     
     all_processed_facts = []
+    start_time = time.time()
     
-    for comp in companies:
-        print(f"\nProcessing {comp['ticker']}...")
+    for idx, comp in enumerate(companies, 1):
+        print(f"\n{progress(idx, total, start_time)} Processing {comp['ticker']}...")
         facts = process_company_documents(comp, base_output_dir=DOCS_PDF_DIR)
         all_processed_facts.extend(facts)
         

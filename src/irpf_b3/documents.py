@@ -16,7 +16,7 @@ from pypdf import PdfReader
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 from irpf_b3.config import settings
-from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername, calculate_eta
+from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername, progress
 
 
 # Magic byte signatures for file format detection (implementation detail of this module)
@@ -303,7 +303,7 @@ def _extract_text_pdf_ocr(pdf_path: str, idx: int, total: int) -> str:
             
             for i in range(1, total_pages + 1):
                 if total_pages > 1:
-                    print(f"[{worker_id()} {idx}/{total} OCR {i}/{total_pages}] {os.path.basename(pdf_path)}")
+                    print(f"[{worker_id()} {progress(idx, total)} OCR {progress(i, total_pages)}] {os.path.basename(pdf_path)}")
                 
                 # Render exactly one page at a time
                 image_paths = convert_from_path(
@@ -435,9 +435,7 @@ def _process_single_fact(args: tuple) -> dict | None:
                 except Exception:
                     pass
 
-        eta_str = calculate_eta(start_time, idx, total)
-
-        print(f"[{worker_id()} {idx}/{total}] {eta_str} {ticker}/{cat_clean}/{txt_filename}")
+        print(f"[{worker_id()} {progress(idx, total, start_time)}] {ticker}/{cat_clean}/{txt_filename}")
         return {
             "ticker": ticker,
             "trading_name": trading_name,

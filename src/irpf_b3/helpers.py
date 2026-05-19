@@ -47,15 +47,25 @@ def sanitize_foldername(name: str, default: str = "unknown") -> str:
     return sanitize_filename(name)
 
 
-def calculate_eta(start_time: float, idx: int, total: int) -> str:
-    """Calculates and formats ETA as [elapsed+remaining=total]."""
-    elapsed = time.time() - start_time
-    avg_time = elapsed / idx if idx > 0 else 0
-    remaining = avg_time * (total - idx)
-    total_time = elapsed + remaining
-    
-    def fmt(s: float) -> str:
-        s = int(s)
-        return f"{s // 3600}h{(s % 3600) // 60:02d}m{s % 60:02d}"
-    
-    return f"[{fmt(elapsed)}+{fmt(remaining)}={fmt(total_time)}]"
+def progress(current: int, total: int, start_time: float = None) -> str:
+    """Formats a unified progress string with optional ETA.
+
+    Without start_time: [current/total 0.00%]
+    With start_time:    [current/total 0.00%] [elapsed+remaining=total]
+    """
+    pct = (current / total * 100) if total > 0 else 0.0
+    parts = [f"[{current}/{total} {pct:.2f}%]"]
+
+    if start_time is not None:
+        elapsed = time.time() - start_time
+        avg_time = elapsed / current if current > 0 else 0
+        remaining = avg_time * (total - current)
+        total_time = elapsed + remaining
+
+        def fmt(s: float) -> str:
+            s = int(s)
+            return f"{s // 3600}h{(s % 3600) // 60:02d}m{s % 60:02d}s"
+
+        parts.append(f"[{fmt(elapsed)}+{fmt(remaining)}={fmt(total_time)}]")
+
+    return " ".join(parts)
