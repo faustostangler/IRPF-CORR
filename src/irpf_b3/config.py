@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     docs_output_dir: str = Field(default="docs/pdf", description="Directory where downloaded PDFs and text files are stored")
     
     # Shared / Global B3
-    b3_max_workers: int = Field(default=10, description="Max thread workers for concurrent tasks")
+    b3_max_workers: int = Field(default=15, description="Max thread workers for concurrent tasks")
     b3_api_retries: int = Field(default=3)
     b3_retry_sleep_seconds: float = Field(default=2.0)
     b3_default_page_size: int = Field(default=120)

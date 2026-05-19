@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import re
 import subprocess
@@ -11,8 +12,11 @@ from datetime import datetime
 import httpx
 from pypdf import PdfReader
 
+# Suppress noisy warnings from pypdf about corrupted PDFs
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
 from irpf_b3.config import settings
-from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername
+from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername, calculate_eta
 
 
 # Magic byte signatures for file format detection (implementation detail of this module)
@@ -347,7 +351,7 @@ def _extract_text_doc(doc_path: str) -> str:
 
 def _process_single_fact(args: tuple) -> dict | None:
     """Internal helper to process a single fact in parallel: download, extract text, and save."""
-    f, ticker, trading_name, base_output_dir, idx, total = args
+    f, ticker, trading_name, base_output_dir, idx, total, start_time = args
 
     download_url = f.get("urlDownload") or ""
     search_url = f.get("urlSearch") or ""
@@ -431,7 +435,9 @@ def _process_single_fact(args: tuple) -> dict | None:
                 except Exception:
                     pass
 
-        print(f"[{worker_id()} {idx}/{total}] {ticker}/{cat_clean}/{txt_filename}")
+        eta_str = calculate_eta(start_time, idx, total)
+
+        print(f"[{worker_id()} {idx}/{total}] {eta_str} {ticker}/{cat_clean}/{txt_filename}")
         return {
             "ticker": ticker,
             "trading_name": trading_name,
@@ -472,7 +478,8 @@ def process_company_documents(company: dict, base_output_dir: str = None) -> lis
 
     # Prepare arguments for parallel processing
     total = len(facts)
-    tasks = [(f, ticker, trading_name, base_output_dir, idx + 1, total) for idx, f in enumerate(facts)]
+    start_time = time.time()
+    tasks = [(f, ticker, trading_name, base_output_dir, idx + 1, total, start_time) for idx, f in enumerate(facts)]
     processed_facts = []
 
     if not tasks:
