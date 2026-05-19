@@ -7,6 +7,7 @@ import time
 import os
 import warnings
 from pypdf import PdfReader
+import argparse
 
 # Desativa avisos de SSL não verificado para manter o log de execução limpo
 warnings.filterwarnings("ignore")
@@ -270,11 +271,18 @@ def extract_pdf_text(pdf_path: str) -> str:
         return ""
 
 def main():
+    parser = argparse.ArgumentParser(description="Scraper de fatos relevantes e comunicados da B3.")
+    parser.add_argument("--ticker", type=str, default=None, help="Executar apenas para um ticker específico")
+    args = parser.parse_args()
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    tickers_path = os.path.join(script_dir, "tickers.txt")
     
-    with open(tickers_path, "r") as f:
-        tickers = [line.strip().upper() for line in f if line.strip()]
+    if args.ticker:
+        tickers = [args.ticker.upper()]
+    else:
+        tickers_path = os.path.join(script_dir, "tickers.txt")
+        with open(tickers_path, "r") as f:
+            tickers = [line.strip().upper() for line in f if line.strip()]
         
     print(f"Carregados {len(tickers)} tickers de interesse.")
     
@@ -312,17 +320,35 @@ def main():
             
             # Higienização dos campos
             cat_clean = sanitize_foldername(category)
+            
+            # Definir categorias de interesse (expansível futuramente)
+            ALLOWED_CATEGORIES = [
+                'comunicado_ao_mercado',
+                'fato_relevante',
+                'aviso_aos_acionistas',
+            ]
+            
+            if cat_clean not in ALLOWED_CATEGORIES:
+                continue
+
             type_clean = sanitize_filename(type_str.strip()) if type_str else ""
-            subj_slug = sanitize_filename((f.get("subject") or "fato_relevante").strip())
+            # Use subject; fallback to kind (B3 uses both interchangeably by category)
+            raw_subject = (f.get("subject") or f.get("kind") or "").strip()
+            subj_slug = sanitize_filename(raw_subject) if raw_subject else ""
             
             # Extrair ID de protocolo do link do documento
             match_id = re.search(r'ID=(\d+)', link)
             doc_id = match_id.group(1) if match_id else "doc"
             
-            cat_type = f"{cat_clean} {type_clean}" if type_clean else cat_clean
-            
-            # Nome do arquivo unificado no formato: year-month-category+type.strip()-subject.strip()_docID.ext
-            filename_base = f"{year}-{month}-{cat_type}-{subj_slug}_{doc_id}"
+            # Pasta: docs/pdf/{company}/{category}/
+            # Arquivo: {year}-{month}-{type_str}-{subj_slug}-{doc_id}
+            parts = [year, month]
+            if type_clean:
+                parts.append(type_clean)
+            if subj_slug:
+                parts.append(subj_slug)
+            parts.append(doc_id)
+            filename_base = "-".join(parts)
             pdf_filename = f"{filename_base}.pdf"
             txt_filename = f"{filename_base}.txt"
             

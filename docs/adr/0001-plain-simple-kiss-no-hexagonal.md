@@ -1,4 +1,4 @@
-# ADR 001: Plain and Simple Code (KISS, SOTA, No Hexagonal Architecture)
+# ADR 001: Plain and Simple Code (KISS, SOTA, No Hexagonal, No DDD, No TDD)
 
 ## Status
 Approved
@@ -10,20 +10,20 @@ However, in this specific project context, Hexagonal Architecture introduces exc
 
 ## Decision
 We will strictly enforce the following architectural rules:
-1. **No Hexagonal Architecture**: We will **NEVER** use Hexagonal Architecture, Ports & Adapters, or similar highly-layered enterprise abstraction frameworks in this project.
-2. **KISS Principle (Keep It Plain and Simple)**: Code should be direct, clean, and highly readable. Avoid over-engineering, unnecessary abstraction layers, and pre-emptive generalizations. Prefer straightforward modules, functions, and classes that solve the immediate requirements.
-3. **State of the Art (SOTA) Tooling & Standards**: We will maintain high engineering quality by utilizing modern, high-performance tooling:
+1. **No Hexagonal, No DDD, No TDD**: We will **NEVER** use Hexagonal Architecture (Ports & Adapters), tactical Domain-Driven Design (DDD) overhead, or Test-Driven Development (TDD) in this project.
+2. **Elegant Modular Monolith**: The codebase is designed as a clean, elegant modular monolith. Logic is divided into cohesive, straightforward modules rather than complex distributed domains or layered architectures, making implementation and debugging fast and direct.
+3. **KISS Principle (Keep It Plain and Simple)**: Code should be direct, clean, and highly readable. Avoid over-engineering, unnecessary abstraction layers, and pre-emptive generalizations. Prefer straightforward modules, functions, and classes that solve the immediate requirements.
+4. **State of the Art (SOTA) Tooling & Standards**: We will maintain high engineering quality by utilizing modern, high-performance tooling:
    - **Environment & Dependency Management**: Fast package resolution using `uv` and standard modern `pyproject.toml`.
    - **Configuration Validation**: Strongly-typed configuration centralized in `config.py` using `pydantic-settings` to parse `.env` files, ensuring fail-fast principles on startup.
    - **Formatting & Linting**: Super-fast formatting and linting via `ruff`.
-   - **Testing**: Robust, straightforward test suites using `pytest` without overly complex mocking structures.
-4. **Pragmatic Modular Structure**: Instead of layers of ports and adapters, code will be organized in functional cohesive modules representing the domains or components directly, keeping the codebase easy to navigate and inspect.
+5. **No Background Execution**: The AI agent must **never** run scripts in the background. All execution of scraper or classification scripts by the agent must be synchronous/foreground, and generally running scripts is reserved for interactive IDE debugging by the user until further notice.
 
 ## Consequences
 - **Positive**:
   - Significant reduction in boilerplate and cognitive overhead.
   - High developer velocity and direct, readable flows of execution.
   - Zero performance cost from excessive abstraction layers.
-  - Frictionless onboarding and testing.
+  - Frictionless onboarding.
 - **Negative/Neutral**:
   - The domain logic and infrastructure/I/O code will be more closely aligned, but we will preserve clean modular design principles to keep them decoupled pragmatically without the boilerplate of formal Ports and Adapters.

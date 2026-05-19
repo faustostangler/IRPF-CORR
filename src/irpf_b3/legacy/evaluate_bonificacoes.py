@@ -9,28 +9,10 @@ import warnings
 from datetime import datetime
 from pypdf import PdfReader
 
+from irpf_b3.llm_client import classify_corporate_event, MODEL_NAME
+
 # Disable insecure request warnings for clean logging
 warnings.filterwarnings("ignore")
-
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "qwen2.5:7b"
-
-SYSTEM_PROMPT = """Você é um assistente especializado em análise de fatos relevantes corporativos de empresas listadas na B3.
-Sua tarefa é analisar o texto do documento fornecido e classificar estritamente a ocorrência de eventos societários corporativos de capital social, especificamente bonificações, desdobramentos ou grupamentos.
-
-Regras Estritas de Classificação:
-1. Responda APENAS com uma das seguintes palavras: "BONIFICAÇÃO", "EVENTOS", "TALVEZ" ou "NÃO".
-2. Não adicione nenhuma introdução, explicação, justificativa, pontuação ou texto extra. A resposta deve ter exatamente uma palavra.
-3. Responda "BONIFICAÇÃO" apenas se o documento confirmar explicitamente uma bonificação de ações (distribuição gratuita de novas ações aos acionistas) aprovada ou proposta.
-4. Responda "EVENTOS" se o documento tratar explicitamente de desdobramento (split), grupamento (reverse split) de ações, ou alterações semelhantes na quantidade/estrutura de ações sem bonificação de fato.
-5. Responda "TALVEZ" se houver indícios, estudos em andamento, propostas preliminares ou discussões sobre uma bonificação de ações futura ou um evento societário futuro (desdobramento/grupamento).
-6. Responda "NÃO" para qualquer outro assunto (como pagamento regular de dividendos, JCP - Juros sobre o Capital Próprio, aumento de capital por subscrição em dinheiro, eleição de diretores, guidance, etc.)."""
-
-USER_PROMPT_TEMPLATE = """Texto do documento:
----
-{extracted_text}
----
-Decisão (BONIFICAÇÃO, EVENTOS, TALVEZ ou NÃO):"""
 
 def get_all_companies(script_dir: str) -> list:
     """Load listed companies from local JSON cache if possible, otherwise fetch from B3."""
@@ -249,36 +231,9 @@ def extract_pdf_text(pdf_path: str) -> str:
         print(f"Erro extração texto PDF {pdf_path}: {e}")
         return ""
 
-def evaluate_text_with_qwen(text: str) -> str:
-    """Send text snippet to local qwen2.5:7b Ollama instance for classification."""
-    # Snip text to keep request context balanced (max ~4000 characters)
-    snipped_text = text[:4000]
-    
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": USER_PROMPT_TEMPLATE.format(extracted_text=snipped_text),
-        "system": SYSTEM_PROMPT,
-        "stream": False,
-        "options": {
-            "temperature": 0.0
-        }
-    }
-    
-    try:
-        with httpx.Client(timeout=45.0) as client:
-            resp = client.post(OLLAMA_URL, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("response", "").strip().upper()
-            
-            # Sanitize response to isolate exactly one of the valid tags
-            for valid_tag in ["BONIFICAÇÃO", "EVENTOS", "TALVEZ", "NÃO"]:
-                if valid_tag in result:
-                    return valid_tag
-            return f"DESCONHECIDO ({result[:20]})"
-    except Exception as e:
-        print(f"Erro ao chamar Ollama ({MODEL_NAME}): {e}")
-        return "ERRO"
+# WHY: LLM classification logic is now in llm_client.py (single source of truth).
+# This alias preserves backward compatibility for callers within this module.
+evaluate_text_with_qwen = classify_corporate_event
 
 def load_processed_results(results_path: str) -> dict:
     """Load already evaluated document keys from CSV to avoid redundant LLM invocations."""
@@ -346,16 +301,39 @@ def main():
                 year, month = parse_year_month(f)
                 
                 cat_clean = sanitize_filename(category) if category else "fato_relevante"
+                
+                # Definir categorias de interesse (expansível futuramente)
+                ALLOWED_CATEGORIES = [
+                    'comunicado_ao_mercado',
+                    'fato_relevante',
+                    # 'aviso_aos_acionistas',
+                ]
+                sobre_acoes = [
+                    'comunicado_ao_mercado/2024-04-outros_comunicados_nao_considerados_fatos_relevantes-data_base_para_o_desdobramento_das_acoes_do_bb-1218752.txt',
+                    'fato_relevante/2024-02-split_de_acoes_decisao_age_e_aprovacao_do_estatuto_pelo_bacen-1189463.txt',
+                    
+                ]
+
+                if cat_clean not in ALLOWED_CATEGORIES:
+                    continue
+
                 type_clean = sanitize_filename(type_str.strip()) if type_str else ""
-                subj_slug = sanitize_filename((f.get("subject") or "fato_relevante").strip())
+                # Use subject; fallback to kind (B3 uses both interchangeably by category)
+                raw_subject = (f.get("subject") or f.get("kind") or "").strip()
+                subj_slug = sanitize_filename(raw_subject) if raw_subject else ""
                 
                 match_id = re.search(r'ID=(\d+)', link)
                 doc_id = match_id.group(1) if match_id else "doc"
                 
-                cat_type = f"{cat_clean} {type_clean}" if type_clean else cat_clean
-                
-                # Nome do arquivo: year-month-category type-subject_docID (space concatenates category and type)
-                filename_base = f"{year}-{month}-{cat_type}-{subj_slug}_{doc_id}"
+                # Pasta: docs/pdf/{company}/{category}/
+                # Arquivo: {year}-{month}-{type_str}-{subj_slug}-{doc_id}.txt
+                parts = [year, month]
+                if type_clean:
+                    parts.append(type_clean)
+                if subj_slug:
+                    parts.append(subj_slug)
+                parts.append(doc_id)
+                filename_base = "-".join(parts)
                 
                 # Check cache of processed tags
                 if filename_base in processed_cache:
@@ -380,9 +358,9 @@ def main():
                 
                 # If no text local, download pdf and extract
                 if not extracted_text.strip():
-                    # Check if pdf already exists locally
                     pdf_downloaded = False
                     if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
+                        # PDF already on disk (e.g. from interrupted previous run)
                         pdf_downloaded = True
                     else:
                         print(f"    -> Baixando PDF para: {f.get('subject')} [{year}/{month}]")
@@ -391,18 +369,23 @@ def main():
                     if pdf_downloaded:
                         extracted_text = extract_pdf_text(pdf_path)
                         if extracted_text.strip():
+                            txt_saved = False
                             try:
                                 with open(txt_path, "w", encoding="utf-8") as text_file:
                                     text_file.write(extracted_text)
+                                txt_saved = True
                             except Exception as e:
                                 print(f"        -> Falha ao salvar txt: {e}")
-                        
-                        # Delete the downloaded/existing PDF file immediately as requested
-                        if os.path.exists(pdf_path):
-                            try:
-                                os.remove(pdf_path)
-                            except Exception as e:
-                                print(f"        -> Erro ao deletar PDF {pdf_path}: {e}")
+                            
+                            # Only delete PDF after txt is confirmed saved
+                            if txt_saved:
+                                try:
+                                    os.remove(pdf_path)
+                                except Exception as e:
+                                    print(f"        -> Erro ao deletar PDF {pdf_path}: {e}")
+                        else:
+                            # Extraction failed (scanned/encrypted PDF) — keep PDF, log warning
+                            print(f"        -> [AVISO] Texto vazio extraído do PDF — mantendo PDF para inspeção: {pdf_path}")
                 
                 if extracted_text.strip():
                     print(f"    -> Avaliando com Ollama ({MODEL_NAME}): {f.get('subject')[:50]}...")
