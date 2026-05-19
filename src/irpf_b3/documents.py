@@ -15,6 +15,11 @@ from irpf_b3.config import settings
 from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername
 
 
+# Magic byte signatures for file format detection (implementation detail of this module)
+_PDF_MAGIC = b"%PDF"
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0"  # Microsoft Compound Document (DOC/XLS/PPT)
+
+
 def parse_year_month(item_dict: dict) -> tuple[str, str]:
     """Extracts year and month resiliently from the B3 item dates."""
     dt_ref = item_dict.get("dateTimeReference")
@@ -72,7 +77,7 @@ def _fetch_documents_page(
     return [], {}
 
 
-def _fetch_all_pages_for_year(client: httpx.Client, cvm_code: str, year: int) -> list[dict]:
+def _fetch_all_pages_for_year(client: httpx.Client, cvm_code: str, year: int, ticker: str = "") -> list[dict]:
     """Fetches all pages of documents for a single year, sequentially.
 
     Each year is expected to run inside its own thread. Pages within
@@ -80,7 +85,7 @@ def _fetch_all_pages_for_year(client: httpx.Client, cvm_code: str, year: int) ->
     simple while the outer loop parallelizes across years.
     """
     wid = worker_id()
-    print(f"    [{wid}] {cvm_code} {year} ")
+    print(f"[{wid}] {ticker or cvm_code} {year}")
     results_page1, page_info = _fetch_documents_page(client, cvm_code, year, 1)
     if not results_page1:
         return []
@@ -96,7 +101,7 @@ def _fetch_all_pages_for_year(client: httpx.Client, cvm_code: str, year: int) ->
     return year_facts
 
 
-def fetch_company_documents(cvm_code: str) -> list[dict]:
+def fetch_company_documents(cvm_code: str, ticker: str = "") -> list[dict]:
     """Fetches historical documents for a CVM code, parallelizing by year.
 
     All years from the current year down to ``docs_start_year`` are
@@ -107,6 +112,7 @@ def fetch_company_documents(cvm_code: str) -> list[dict]:
     """
     current_year = datetime.now().year
     years = list(range(settings.docs_start_year, current_year + 1))
+
     all_facts: dict[str, dict] = {}
 
     limits = httpx.Limits(
@@ -117,7 +123,7 @@ def fetch_company_documents(cvm_code: str) -> list[dict]:
     with httpx.Client(verify=False, timeout=settings.b3_docs_timeout, limits=limits) as client:
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings.b3_max_workers) as executor:
             future_to_year = {
-                executor.submit(_fetch_all_pages_for_year, client, cvm_code, yr): yr
+                executor.submit(_fetch_all_pages_for_year, client, cvm_code, yr, ticker): yr
                 for yr in years
             }
 
@@ -135,10 +141,6 @@ def fetch_company_documents(cvm_code: str) -> list[dict]:
     return list(all_facts.values())
 
 
-# Magic byte signatures for file format detection
-_PDF_MAGIC = b"%PDF"
-_OLE2_MAGIC = b"\xd0\xcf\x11\xe0"  # Microsoft Compound Document (DOC/XLS/PPT)
-
 
 def _detect_file_type(file_bytes: bytes) -> str:
     """Detects document format from magic bytes.
@@ -147,10 +149,10 @@ def _detect_file_type(file_bytes: bytes) -> str:
         File extension string: 'pdf', 'doc', or 'bin' for unknown formats.
     """
     if file_bytes[:4] == _PDF_MAGIC:
-        return "pdf"
+        return settings.ext_pdf
     if file_bytes[:4] == _OLE2_MAGIC:
-        return "doc"
-    return "bin"
+        return settings.ext_doc
+    return settings.ext_bin
 
 
 def download_document(download_url: str, search_url: str, output_dir: str, filename_base: str) -> tuple[str | None, str | None]:
@@ -162,6 +164,12 @@ def download_document(download_url: str, search_url: str, output_dir: str, filen
     Returns:
         Tuple of (saved_file_path, detected_extension) or (None, None) on failure.
     """
+    # Check if a previously downloaded file already exists to save data/bandwidth
+    for ext in settings.supported_extensions:
+        check_path = os.path.join(output_dir, f"{filename_base}.{ext}")
+        if os.path.exists(check_path) and os.path.getsize(check_path) > 0:
+            return check_path, ext
+
     file_bytes = _download_via_get(download_url)
 
     if not file_bytes and search_url:
@@ -221,20 +229,32 @@ def _download_via_post(search_url: str) -> bytes | None:
     return None
 
 
-def extract_text_from_file(file_path: str, ext: str) -> str:
+def extract_text_from_file(file_path: str, ext: str, idx: int, total: int) -> str:
     """Extracts text from a downloaded document based on its detected format.
 
     Dispatches to pypdf for PDFs and antiword for legacy DOC files.
+    Short-circuits if a non-empty .txt artifact already exists alongside the source file.
     """
-    if ext == "pdf":
-        return _extract_text_pdf(file_path)
-    if ext == "doc":
+    # Idempotency guard: skip CPU-heavy extraction if .txt already exists
+    txt_path = os.path.splitext(file_path)[0] + ".txt"
+    if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
+        return ""
+
+    if ext == settings.ext_pdf:
+        return _extract_text_pdf(file_path, idx, total)
+    if ext == settings.ext_doc:
         return _extract_text_doc(file_path)
     return ""
 
 
-def _extract_text_pdf(pdf_path: str) -> str:
-    """Extracts text from PDF using pypdf."""
+def _extract_text_pdf(pdf_path: str, idx: int, total: int) -> str:
+    """Extracts text from PDF using pypdf, with OCR fallback for scanned documents.
+
+    Strategy:
+        1. Fast path — pypdf text extraction (native text layer).
+        2. Fallback — pdf2image + pytesseract OCR (image-based/scanned pages).
+    """
+    # Fast path: native text extraction via pypdf
     try:
         reader = PdfReader(pdf_path)
         text_parts = []
@@ -242,7 +262,69 @@ def _extract_text_pdf(pdf_path: str) -> str:
             text = page.extract_text()
             if text:
                 text_parts.append(text)
-        return "\n\n".join(text_parts)
+        if text_parts:
+            return "\n\n".join(text_parts)
+    except Exception:
+        pass
+
+    # Fallback: OCR for scanned/image-only PDFs
+    return _extract_text_pdf_ocr(pdf_path, idx, total)
+
+
+def _extract_text_pdf_ocr(pdf_path: str, idx: int, total: int) -> str:
+    """Renders PDF pages as images and runs Tesseract OCR.
+
+    Requires system packages: tesseract-ocr, tesseract-ocr-por, poppler-utils.
+    """
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+    except ImportError:
+        print("[-] OCR deps missing. Run: uv add pdf2image pytesseract")
+        return ""
+
+    try:
+        from pdf2image import convert_from_path, pdfinfo_from_path
+        import tempfile
+        import os
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                info = pdfinfo_from_path(pdf_path)
+                total_pages = int(info.get("Pages", 1))
+            except Exception:
+                total_pages = 1
+                
+            text_parts = []
+            
+            for i in range(1, total_pages + 1):
+                if total_pages > 1:
+                    print(f"[{worker_id()} {idx}/{total} OCR {i}/{total_pages}] {os.path.basename(pdf_path)}")
+                
+                # Render exactly one page at a time
+                image_paths = convert_from_path(
+                    pdf_path,
+                    dpi=150,
+                    output_folder=temp_dir,
+                    paths_only=True,
+                    fmt="jpeg",
+                    first_page=i,
+                    last_page=i
+                )
+                
+                if image_paths:
+                    img_path = image_paths[0]
+                    text = pytesseract.image_to_string(img_path, lang="por")
+                    if text and text.strip():
+                        text_parts.append(text.strip())
+                    
+                    # Clean up the single image file immediately to free disk space
+                    try:
+                        os.remove(img_path)
+                    except Exception:
+                        pass
+                        
+            return "\n\n".join(text_parts)
     except Exception:
         return ""
 
@@ -257,7 +339,7 @@ def _extract_text_doc(doc_path: str) -> str:
         if result.returncode == 0:
             return result.stdout
     except FileNotFoundError:
-        print("    [-] antiword not installed. Run: sudo apt-get install -y antiword")
+        print("[-] antiword not installed. Run: sudo apt-get install -y antiword")
     except Exception:
         pass
     return ""
@@ -265,7 +347,7 @@ def _extract_text_doc(doc_path: str) -> str:
 
 def _process_single_fact(args: tuple) -> dict | None:
     """Internal helper to process a single fact in parallel: download, extract text, and save."""
-    f, ticker, trading_name, base_output_dir = args
+    f, ticker, trading_name, base_output_dir, idx, total = args
 
     download_url = f.get("urlDownload") or ""
     search_url = f.get("urlSearch") or ""
@@ -308,30 +390,48 @@ def _process_single_fact(args: tuple) -> dict | None:
 
     has_text = False
 
-    # Check idempotency based on final .txt artifact
+    # Tier 1: .txt already exists — skip download and extraction entirely
     if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
         has_text = True
     else:
-        # Download document (format detected by magic bytes)
-        doc_path, ext = download_document(download_url, search_url, ticker_dir, filename_base)
+        doc_path, ext = None, None
+
+        # Tier 2: source file (.pdf/.doc/.bin) exists locally — extract only, skip download
+        for candidate_ext in settings.supported_extensions:
+            candidate_path = os.path.join(ticker_dir, f"{filename_base}.{candidate_ext}")
+            if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
+                doc_path, ext = candidate_path, candidate_ext
+                break
+
+        # Tier 3: nothing on disk — download the document
+        if not doc_path:
+            doc_path, ext = download_document(download_url, search_url, ticker_dir, filename_base)
 
         if doc_path and ext:
-            extracted_text = extract_text_from_file(doc_path, ext)
+            extracted_text = extract_text_from_file(doc_path, ext, idx, total)
 
             if extracted_text.strip():
                 try:
                     with open(txt_path, "w", encoding="utf-8") as txt_file:
                         txt_file.write(extracted_text)
-                    print(f"    [{worker_id()} +] Processed and saved: {txt_filename}")
                     has_text = True
                     # Delete source file after successful extraction
                     os.remove(doc_path)
                 except Exception as e:
-                    print(f"    [{worker_id()} -] Failed to save txt for {txt_filename}: {e}")
+                    print(f"[{worker_id()} -] Failed to save txt for {txt_filename}: {e}")
             else:
-                print(f"    [{worker_id()} -] No extractable text (kept for inspection): {os.path.basename(doc_path)}")
+                print(f"[{worker_id()} -] No extractable text (kept for inspection): {os.path.basename(doc_path)}")
 
     if has_text:
+        for ext_name in settings.supported_extensions:
+            rem_path = os.path.join(ticker_dir, f"{filename_base}.{ext_name}")
+            if os.path.exists(rem_path):
+                try:
+                    os.remove(rem_path)
+                except Exception:
+                    pass
+
+        print(f"[{worker_id()} {idx}/{total}] {ticker}/{cat_clean}/{txt_filename}")
         return {
             "ticker": ticker,
             "trading_name": trading_name,
@@ -367,18 +467,17 @@ def process_company_documents(company: dict, base_output_dir: str = None) -> lis
     cvm = company["cvm"]
     trading_name = company["trading_name"]
     
-    print(f"\n[+] Fetching historical facts for {ticker} (CVM: {cvm})...")
-    facts = fetch_company_documents(cvm)
-    print(f"    -> Found {len(facts)} historical facts.")
+    facts = fetch_company_documents(cvm, ticker=ticker)
+    print(f"\n{ticker} has {len(facts)} documents")
 
     # Prepare arguments for parallel processing
-    tasks = [(f, ticker, trading_name, base_output_dir) for f in facts]
+    total = len(facts)
+    tasks = [(f, ticker, trading_name, base_output_dir, idx + 1, total) for idx, f in enumerate(facts)]
     processed_facts = []
 
     if not tasks:
         return processed_facts
 
-    print(f"    -> Extracting text and saving artifacts in parallel...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=settings.b3_max_workers) as executor:
         future_to_task = {executor.submit(_process_single_fact, task): task for task in tasks}
         
@@ -388,6 +487,6 @@ def process_company_documents(company: dict, base_output_dir: str = None) -> lis
                 if result:
                     processed_facts.append(result)
             except Exception as e:
-                print(f"    [-] Task raised an exception: {e}")
+                print(f"[-] Task raised an exception: {e}")
 
     return processed_facts

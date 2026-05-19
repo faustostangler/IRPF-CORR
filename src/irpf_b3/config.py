@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     docs_output_dir: str = Field(default="docs/pdf", description="Directory where downloaded PDFs and text files are stored")
     
     # Shared / Global B3
-    b3_max_workers: int = Field(default=1, description="Max thread workers for concurrent tasks")
+    b3_max_workers: int = Field(default=10, description="Max thread workers for concurrent tasks")
     b3_api_retries: int = Field(default=3)
     b3_retry_sleep_seconds: float = Field(default=2.0)
     b3_default_page_size: int = Field(default=120)
@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     cvm_pdf_timeout: float = Field(default=40.0)
     empty_years_threshold: int = Field(default=4)
     docs_start_year: int = Field(default=2000)
+
+    # Document file extensions
+    ext_pdf: str = Field(default="pdf", description="Extension for PDF documents")
+    ext_doc: str = Field(default="doc", description="Extension for legacy OLE2 Word documents")
+    ext_bin: str = Field(default="bin", description="Extension for unknown/binary documents")
+
+    @property
+    def supported_extensions(self) -> list[str]:
+        """All supported download extensions, in detection-priority order."""
+        return [self.ext_pdf, self.ext_doc, self.ext_bin]
 
     # Categories
     b3_allow_all_categories: bool = Field(default=True, description="Whether to allow all categories for exploratory debug")

@@ -14,7 +14,7 @@ def worker_id() -> str:
     name = threading.current_thread().name
     # ThreadPoolExecutor names threads as 'ThreadPoolExecutor-N_M'
     if "_" in name:
-        return f"W{name.rsplit('_', 1)[-1]}"
+        return f"W{int(name.rsplit('_', 1)[-1])+1}"
     return name
 
 

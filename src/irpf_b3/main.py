@@ -22,7 +22,7 @@ def main():
     all_processed_facts = []
     
     for comp in companies:
-        print(f"\n--- Processing {comp['ticker']} ({comp['trading_name']}) ---")
+        print(f"\nProcessing {comp['ticker']}...")
         facts = process_company_documents(comp, base_output_dir=DOCS_PDF_DIR)
         all_processed_facts.extend(facts)
         

@@ -8,12 +8,12 @@ Hardcoding configurations, API endpoints, URLs, default timeouts, or file paths 
 
 ## Decision
 We will strictly enforce the following rules for constants, imports, and global structure:
-1. **No Embedded Hardcoded Values**: All constants (URLs, API endpoints, base payload structures, default timeouts, file paths) must be defined as global variables at the top of the file (or immediately following imports).
+1. **No Embedded Hardcoded Values**: All constants (URLs, API endpoints, base payload structures, default timeouts, file paths, magic bytes, format strings) must be defined at the top of the file (immediately following imports).
 2. **Imports First**: All module imports must be placed at the very top of the file, organized according to standard convention (standard library, third-party libraries, local modules).
-3. **Upper Case for Constants**: Global constants should be named using `UPPER_CASE_WITH_UNDERSCORES` to clearly differentiate them from local variables.
+3. **Upper Case for Constants**: Global constants should be named using `UPPER_CASE_WITH_UNDERSCORES` to clearly differentiate them from local variables. Private module-level constants (implementation details not exported) follow the same rule but are prefixed with a single underscore (e.g., `_PDF_MAGIC`).
 4. **Standard File Structure**:
    - Imports
-   - Constants / Global Configurations
+   - Module-level constants (both public `UPPER_CASE` and private `_UPPER_CASE`)
    - Helper Functions / Classes
    - Core Logic / Entrypoints (e.g., `main()`)
 
