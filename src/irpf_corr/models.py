@@ -15,6 +15,8 @@ class BrokerageNote(BaseModel):
     """A complete brokerage note from a single trading day."""
     date: date
     broker: str
+    currency: Literal["BRL", "USD"] = "BRL"
+    exchange_rate: Decimal = Decimal("1")
     trades: list[Trade]
     brokerage_fee: Decimal = Decimal("0")
     settlement_fee: Decimal = Decimal("0")

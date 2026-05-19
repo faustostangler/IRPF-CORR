@@ -13,7 +13,12 @@ def apportion_fees(note: BrokerageNote) -> List[Trade]:
     total_fees = note.total_fees
     
     if total_fees == Decimal("0"):
-        return deepcopy(note.trades)
+        result_trades = []
+        for trade in note.trades:
+            new_trade = deepcopy(trade)
+            new_trade.unit_price = new_trade.unit_price * note.exchange_rate
+            result_trades.append(new_trade)
+        return result_trades
         
     total_volume = sum(trade.quantity * trade.unit_price for trade in note.trades)
     
@@ -28,7 +33,9 @@ def apportion_fees(note: BrokerageNote) -> List[Trade]:
         allocated_fee = allocated_fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         
         new_trade = deepcopy(trade)
-        new_trade.allocated_fees = allocated_fee
+        # Convert to BRL using the exchange rate (defaults to 1 for BRL)
+        new_trade.unit_price = new_trade.unit_price * note.exchange_rate
+        new_trade.allocated_fees = (allocated_fee * note.exchange_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         result_trades.append(new_trade)
         
     return result_trades

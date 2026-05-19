@@ -92,3 +92,32 @@ def test_average_cost_sell_does_not_change_avg():
     
     assert new_position.quantity == 150
     assert new_position.average_cost == Decimal("39.5801")
+
+def test_apportion_fees_with_exchange_rate():
+    """Test that fees and unit price are converted when exchange rate > 1."""
+    trade1 = Trade(ticker="GOOGL", quantity=4, unit_price=Decimal("1800.00"), direction="BUY")
+    note = BrokerageNote(
+        date=date(2020, 12, 8),
+        broker="Avenue",
+        currency="USD",
+        exchange_rate=Decimal("5.00"),
+        trades=[trade1],
+        brokerage_fee=Decimal("1.00"),
+    )
+    trades_with_fees = apportion_fees(note)
+    assert trades_with_fees[0].unit_price == Decimal("9000.00")
+    assert trades_with_fees[0].allocated_fees == Decimal("5.00")
+
+def test_apportion_fees_zero_fees_exchange_rate():
+    """Test that unit price is converted even when there are no fees."""
+    trade1 = Trade(ticker="GOOGL", quantity=4, unit_price=Decimal("1800.00"), direction="BUY")
+    note = BrokerageNote(
+        date=date(2020, 12, 8),
+        broker="Avenue",
+        currency="USD",
+        exchange_rate=Decimal("5.00"),
+        trades=[trade1],
+    )
+    trades_with_fees = apportion_fees(note)
+    assert trades_with_fees[0].unit_price == Decimal("9000.00")
+    assert trades_with_fees[0].allocated_fees == Decimal("0")
