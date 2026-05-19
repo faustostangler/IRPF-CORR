@@ -319,7 +319,7 @@ def main():
             match_id = re.search(r'ID=(\d+)', link)
             doc_id = match_id.group(1) if match_id else "doc"
             
-            cat_type = f"{cat_clean}+{type_clean}" if type_clean else cat_clean
+            cat_type = f"{cat_clean} {type_clean}" if type_clean else cat_clean
             
             # Nome do arquivo unificado no formato: year-month-category+type.strip()-subject.strip()_docID.ext
             filename_base = f"{year}-{month}-{cat_type}-{subj_slug}_{doc_id}"

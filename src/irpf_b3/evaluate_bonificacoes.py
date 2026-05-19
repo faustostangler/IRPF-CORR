@@ -1,3 +1,4 @@
+import csv
 import httpx
 import base64
 import json
@@ -280,17 +281,17 @@ def evaluate_text_with_qwen(text: str) -> str:
         return "ERRO"
 
 def load_processed_results(results_path: str) -> dict:
-    """Load already evaluated document keys to avoid redundant LLM invocations."""
+    """Load already evaluated document keys from CSV to avoid redundant LLM invocations."""
     processed = {}
     if os.path.exists(results_path):
         try:
-            with open(results_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    # Parse lines in format: [RESULT] name | Link: link
-                    match = re.match(r"^\[(.*?)\]\s+(.*?)\s*\|\s*Link:\s*(.*?)$", line.strip())
-                    if match:
-                        res, doc_name, link = match.groups()
-                        processed[doc_name.strip()] = res.strip()
+            with open(results_path, "r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    filename = row.get("filename", "").strip()
+                    resultado = row.get("resultado", "").strip()
+                    if filename:
+                        processed[filename] = resultado
         except Exception as e:
             print(f"Erro ao carregar resultados anteriores: {e}")
     return processed
@@ -312,15 +313,19 @@ def main():
     docs_pdf_dir = os.path.join(project_root, "docs", "pdf")
     os.makedirs(docs_pdf_dir, exist_ok=True)
     
-    results_txt_path = os.path.join(project_root, "bonificacoes_resultados.txt")
+    results_txt_path = os.path.join(docs_pdf_dir, "bonificacoes_resultados.csv")
     processed_cache = load_processed_results(results_txt_path)
     print(f"Carregados {len(processed_cache)} resultados salvos anteriormente.")
     
     print("Mapeando companhias B3...")
     all_companies = get_all_companies(script_dir)
     
-    # Open results file in append mode to save incrementally
-    with open(results_txt_path, "a", encoding="utf-8") as out_file:
+    # Open CSV in append mode; write header only if file is new
+    csv_is_new = not os.path.exists(results_txt_path) or os.path.getsize(results_txt_path) == 0
+    with open(results_txt_path, "a", encoding="utf-8", newline="") as out_file:
+        csv_writer = csv.DictWriter(out_file, fieldnames=["resultado", "ticker", "year", "month", "category", "filename", "link"])
+        if csv_is_new:
+            csv_writer.writeheader()
         for ticker in tickers:
             cvm, trading_name = get_cvm_for_ticker(ticker, all_companies)
             if not cvm:
@@ -337,15 +342,20 @@ def main():
                     continue
                     
                 category = f.get("category") or "Fato Relevante"
+                type_str = f.get("type") or ""
                 year, month = parse_year_month(f)
-                cat_clean = sanitize_filename(category)
-                subj_slug = sanitize_filename(f.get("subject") or "fato_relevante")
+                
+                cat_clean = sanitize_filename(category) if category else "fato_relevante"
+                type_clean = sanitize_filename(type_str.strip()) if type_str else ""
+                subj_slug = sanitize_filename((f.get("subject") or "fato_relevante").strip())
                 
                 match_id = re.search(r'ID=(\d+)', link)
                 doc_id = match_id.group(1) if match_id else "doc"
                 
-                # Consistent flat naming format
-                filename_base = f"{ticker}-{year}-{month}-{cat_clean}-{subj_slug}_{doc_id}"
+                cat_type = f"{cat_clean} {type_clean}" if type_clean else cat_clean
+                
+                # Nome do arquivo: year-month-category type-subject_docID (space concatenates category and type)
+                filename_base = f"{year}-{month}-{cat_type}-{subj_slug}_{doc_id}"
                 
                 # Check cache of processed tags
                 if filename_base in processed_cache:
@@ -353,7 +363,7 @@ def main():
                     print(f"    [OK] Já avaliado ({processed_cache[filename_base]}): {f.get('subject')} [{year}/{month}]")
                     continue
                 
-                ticker_dir = os.path.join(docs_pdf_dir, ticker)
+                ticker_dir = os.path.join(docs_pdf_dir, ticker, cat_clean)
                 os.makedirs(ticker_dir, exist_ok=True)
                 pdf_path = os.path.join(ticker_dir, f"{filename_base}.pdf")
                 txt_path = os.path.join(ticker_dir, f"{filename_base}.txt")
@@ -399,9 +409,17 @@ def main():
                     decision = evaluate_text_with_qwen(extracted_text)
                     print(f"        === RESULTADO: {decision} ===")
                     
-                    # Write immediately to output file
-                    out_file.write(f"[{decision}] {filename_base} | Link: {link}\n")
-                    out_file.flush() # Force write to disk
+                    # Write row incrementally to CSV
+                    csv_writer.writerow({
+                        "resultado": decision,
+                        "ticker": ticker,
+                        "year": year,
+                        "month": month,
+                        "category": category,
+                        "filename": filename_base,
+                        "link": link,
+                    })
+                    out_file.flush()  # Force write to disk
                 else:
                     print(f"    [-] Não foi possível obter o texto do fato: {f.get('subject')}")
 
