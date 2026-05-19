@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from irpf_b3.config import settings
-from irpf_b3.helpers import extract_keyword_context
+from irpf_b3.helpers import extract_keyword_context, progress
 from irpf_b3.classifier import call_ollama
 
 _CORPORATE_EVENT_PATTERN = re.compile(
@@ -117,7 +117,7 @@ def scan_documents_for_events(target_dir: str) -> list[ScanHit]:
             filepath = Path(root) / file
             category = filepath.parent.name
 
-            if category not in settings.allowed_categories:
+            if not settings.b3_allow_all_categories and category not in settings.allowed_categories:
                 skipped_by_category += 1
                 continue
 
@@ -180,6 +180,7 @@ def triage_scan_hits(scan_hits: list[ScanHit], output_csv: str) -> list[ScanHit]
     pending = [hit for hit in scan_hits if hit.filename not in already_processed]
     print(f"\n[Triage] {len(already_processed)} already triaged, {len(pending)} pending.")
 
+    triage_start_time = time.time()
     with open(output_csv, "a", encoding="utf-8", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=csv_fieldnames)
         if csv_is_new:
@@ -194,7 +195,6 @@ def triage_scan_hits(scan_hits: list[ScanHit], output_csv: str) -> list[ScanHit]
                 snippet_text=combined_snippets
             )
             
-            print(f"[Triage] [{i}/{len(pending)}] {hit.category}/{hit.filename}...", end="", flush=True)
             start_time = time.time()
             decision = call_ollama(
                 system_prompt=_TRIAGE_SYSTEM_PROMPT,
@@ -202,8 +202,8 @@ def triage_scan_hits(scan_hits: list[ScanHit], output_csv: str) -> list[ScanHit]
                 valid_tags=_TRIAGE_VALID_TAGS,
                 timeout=settings.llm_triage_timeout
             )
-            elapsed = time.time() - start_time
-            print(f" {decision} ({elapsed:.1f}s)")
+            prog_str = progress(i, len(pending), triage_start_time)
+            print(f"{prog_str} [{decision}] {hit.category}/{hit.filename}")
             
             writer.writerow(
                 {
@@ -254,6 +254,7 @@ def analyze_corporate_events(
 
     reports: list[CorporateEventReport] = []
 
+    analysis_start_time = time.time()
     with open(output_csv, "a", encoding="utf-8", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=csv_fieldnames)
         if csv_is_new:
@@ -275,7 +276,8 @@ def analyze_corporate_events(
                 full_text=full_text
             )
 
-            print(f"[Analysis] [{i}/{len(pending)}] {hit.category}/{hit.filename}...", end="", flush=True)
+            prog_str = progress(i, len(pending), analysis_start_time)
+            print(f"[Analysis] {prog_str} {hit.category}/{hit.filename}...", end="", flush=True)
             start_time = time.time()
             
             raw_response = call_ollama(

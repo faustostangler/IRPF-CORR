@@ -43,7 +43,8 @@ Strict Classification Rules:
 3. Respond "BONUS" only if the document explicitly confirms an approved or proposed stock bonus (distribution of free shares to shareholders).
 4. Respond "EVENTS" if the document explicitly addresses stock splits, reverse stock splits, or similar changes to stock structure/quantity without actual bonus shares.
 5. Respond "MAYBE" if there are indications, ongoing studies, preliminary proposals, or discussions about a future stock bonus or a future corporate event (split/reverse split).
-6. Respond "NO" for any other matter (such as regular dividend payments, JCP - interest on equity, capital increase via cash subscription, election of directors, guidance, etc.)."""
+6. Respond "PAYMENT" for any mention of dividends, interest on equity, or other payments to shareholders, except EVENTS.
+7. Respond "NO" for any other matter."""
 
 USER_PROMPT_TEMPLATE = """Document text:
 ---
@@ -76,19 +77,34 @@ def call_ollama(
 
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.post(settings.ollama_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("response", "").strip()
+            current_prompt = user_prompt
+            current_payload = {**payload, "prompt": current_prompt}
 
-            if not valid_tags:
-                return result
+            for attempt in range(4):  # 1 initial + 3 retries
+                resp = client.post(settings.ollama_url, json=current_payload)
+                resp.raise_for_status()
+                data = resp.json()
+                result = data.get("response", "").strip()
 
-            result_upper = result.upper()
-            for valid_tag in valid_tags:
-                if valid_tag in result_upper:
-                    return valid_tag
-            return f"UNKNOWN ({result_upper[:20]})"
+                if not valid_tags:
+                    return result
+
+                result_upper = result.upper()
+                for valid_tag in valid_tags:
+                    if valid_tag in result_upper:
+                        return valid_tag
+
+                if attempt < 3:
+                    allowed = " | ".join(valid_tags)
+                    current_prompt = (
+                        f"Your previous answer was: '{result}'\n"
+                        f"That response is not one of the allowed values.\n"
+                        f"You MUST reply with EXACTLY one of these words and nothing else: {allowed}\n"
+                        f"Original question:\n{user_prompt}"
+                    )
+                    current_payload["prompt"] = current_prompt
+                else:
+                    return f"UNKNOWN ({result_upper[:20]})"
     except Exception as e:
         print(f"Error calling Ollama ({settings.ollama_model}): {e}")
         return "ERROR"

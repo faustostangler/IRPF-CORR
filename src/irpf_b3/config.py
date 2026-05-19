@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     })
     cvm_pdf_timeout: float = Field(default=40.0)
     empty_years_threshold: int = Field(default=4)
-    docs_start_year: int = Field(default=2000)
+    docs_start_year: int = Field(default=2018) # 2000
 
     # Document file extensions
     ext_pdf: str = Field(default="pdf", description="Extension for PDF documents")
