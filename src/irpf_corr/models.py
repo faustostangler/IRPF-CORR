@@ -3,16 +3,20 @@ from decimal import Decimal
 from typing import Literal
 from pydantic import BaseModel, computed_field
 
+
 class Trade(BaseModel):
     """A single trade within a brokerage note."""
+
     ticker: str
     quantity: Decimal
     unit_price: Decimal
     direction: Literal["BUY", "SELL"]
     allocated_fees: Decimal = Decimal("0")
 
+
 class BrokerageNote(BaseModel):
     """A complete brokerage note from a single trading day."""
+
     date: date
     broker: str
     currency: Literal["BRL", "USD"] = "BRL"
@@ -29,11 +33,18 @@ class BrokerageNote(BaseModel):
     @property
     def total_fees(self) -> Decimal:
         """Sum of all deductible operational costs."""
-        return (self.brokerage_fee + self.settlement_fee
-                + self.exchange_fee + self.iss_tax + self.other_fees)
+        return (
+            self.brokerage_fee
+            + self.settlement_fee
+            + self.exchange_fee
+            + self.iss_tax
+            + self.other_fees
+        )
+
 
 class Position(BaseModel):
     """Current holding position for a single ticker."""
+
     ticker: str
     quantity: Decimal = Decimal("0")
     average_cost: Decimal = Decimal("0")

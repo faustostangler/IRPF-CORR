@@ -1,7 +1,7 @@
 [project]
 name = "irpf-corr"
 version = "0.1.0"
-description = "Calculador de Preço Médio de Ações"
+description = "Average Stock Price Calculator"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,24 +10,10 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "pypdf>=6.11.0",
     "pyyaml>=6.0.3",
-]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
+    "unidecode>=1.4.0",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "-ra -q"
-testpaths = ["tests"]
-pythonpath = ["src"]
-
-[tool.mutmut]
-paths_to_mutate = "src/irpf_corr/"
-backup = false
-runner = "python -m pytest"

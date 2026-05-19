@@ -9,12 +9,12 @@ from irpf_corr.portfolio import process_brokerage_notes
 from irpf_corr.ptax import get_ptax
 
 def main():
-    notas_path = Path("docs/notas/notas.yaml")
-    if not notas_path.exists():
-        print(f"File not found: {notas_path}")
+    notes_path = Path("docs/notas/notas.yaml")
+    if not notes_path.exists():
+        print(f"File not found: {notes_path}")
         return
 
-    with open(notas_path, "r", encoding="utf-8") as f:
+    with open(notes_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     # Validate and parse
@@ -30,7 +30,7 @@ def main():
     portfolio = process_brokerage_notes(notes, ticker_map=ticker_map)
 
     # Display results
-    print(f"{'Ticker':<10} | {'Qtde':<10} | {'Preço Médio':<15} | {'Total Investido'}")
+    print(f"{'Ticker':<10} | {'Qty':<10} | {'Average Price':<15} | {'Total Invested'}")
     print("-" * 65)
     for ticker in sorted(portfolio.keys()):
         pos = portfolio[ticker]

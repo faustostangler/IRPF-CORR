@@ -9,108 +9,114 @@ import warnings
 from pypdf import PdfReader
 import argparse
 
-# Desativa avisos de SSL não verificado para manter o log de execução limpo
+# Disable unverified SSL warnings to keep the execution log clean
 warnings.filterwarnings("ignore")
 
+
 def get_all_companies(script_dir: str = None) -> list:
-    """Busca todas as companhias listadas na B3 na página inicial com paginação dinâmica e resiliência, com cache local em JSON."""
+    """Fetches all listed companies from B3 on the initial page using dynamic pagination and resiliency, with a local JSON cache."""
     if script_dir is None:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
+
     json_cache_path = os.path.join(script_dir, "all_companies.json")
     if os.path.exists(json_cache_path):
         try:
             with open(json_cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Erro ao ler cache local de companhias: {e}")
+            print(f"Error reading local companies cache: {e}")
 
-    print("Mapeamento local não encontrado ou inválido. Buscando lista da B3...")
-    payload = {
-        "language": "pt-br",
-        "pageNumber": 1,
-        "pageSize": 120
-    }
-    
+    print("Local mapping not found or invalid. Fetching B3 company list...")
+    payload = {"language": "pt-br", "pageNumber": 1, "pageSize": 120}
+
     companies = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
+
     with httpx.Client(verify=False, timeout=15.0) as client:
         page_number = 1
-        total_pages = 1  # Será atualizado no primeiro request
-        
+        total_pages = 1  # Will be updated on the first request
+
         while page_number <= total_pages:
             payload["pageNumber"] = page_number
-            payload_b64 = base64.b64encode(json.dumps(payload).encode('utf-8')).decode('utf-8')
+            payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode(
+                "utf-8"
+            )
             url = f"https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall/GetInitialCompanies/{payload_b64}"
-            
-            # Resiliência: Tentar até 3 vezes por página
+
+            # Resiliency: Retry up to 3 times per page
             for attempt in range(3):
                 try:
                     resp = client.get(url, headers=headers)
                     resp.raise_for_status()
                     data = resp.json()
-                    
+
                     results = data.get("results", [])
                     page_info = data.get("page", {})
-                    
+
                     if not results:
-                        total_pages = 0  # Força a saída do loop
+                        total_pages = 0  # Force exit from the loop
                         break
-                        
+
                     companies.extend(results)
                     total_pages = page_info.get("totalPages", page_number)
-                    break  # Sucesso, sai do loop de retries
-                    
-                except (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError) as e:
-                    print(f"Erro na página {page_number} (tentativa {attempt+1}/3): {e}")
+                    break  # Success, exit the retry loop
+
+                except (
+                    httpx.RequestError,
+                    httpx.HTTPStatusError,
+                    json.JSONDecodeError,
+                ) as e:
+                    print(f"Error on page {page_number} (attempt {attempt + 1}/3): {e}")
                     if attempt == 2:
-                        print("Falha persistente na paginação. Retornando dados já extraídos.")
+                        print(
+                            "Persistent pagination failure. Returning already extracted data."
+                        )
                         return companies
                     time.sleep(2)
-            
+
             page_number += 1
-            
-    # Salvar cache
+
+    # Save cache
     try:
         with open(json_cache_path, "w", encoding="utf-8") as f:
             json.dump(companies, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Não foi possível salvar o cache de companhias: {e}")
-        
+        print(f"Could not save companies cache: {e}")
+
     return companies
 
 
 def get_cvm_for_ticker(ticker: str, all_companies: list) -> tuple:
-    """Filtro simples para encontrar o codeCVM pelo ticker."""
-    # Remove final numérico ex: RADL3 -> RADL, TAEE11 -> TAEE
-    base_ticker = re.sub(r'\d+$', '', ticker)
-    
+    """Simple filter to find the codeCVM by ticker."""
+    # Remove numeric suffix, e.g.: RADL3 -> RADL, TAEE11 -> TAEE
+    base_ticker = re.sub(r"\d+$", "", ticker)
+
     for c in all_companies:
-        issuing = c.get('issuingCompany', '').upper()
-        trading = c.get('tradingName', '').upper()
-        
-        # Bate prefixo do ticker
+        issuing = c.get("issuingCompany", "").upper()
+        trading = c.get("tradingName", "").upper()
+
+        # Match ticker prefix
         if issuing == base_ticker or base_ticker in issuing:
-            return c.get('codeCVM'), c.get('tradingName')
-            
-        # Caso seja BDR ou nome parecido
+            return c.get("codeCVM"), c.get("tradingName")
+
+        # In case of BDR or similar name
         if ticker in trading or base_ticker in trading:
-            return c.get('codeCVM'), c.get('tradingName')
-            
+            return c.get("codeCVM"), c.get("tradingName")
+
     return None, None
 
-def fetch_fato_relevante(code_cvm: str) -> list:
-    """Busca historicamente documentos de todas as categorias de um codeCVM na API da B3 desde 2000 com paginação dinâmica."""
+
+def fetch_material_facts(code_cvm: str) -> list:
+    """Fetches historically documents of all categories of a codeCVM from the B3 API since 2000 with dynamic pagination."""
     current_year = datetime.now().year
-    all_fatos = {}
+    all_facts = {}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
+
     with httpx.Client(verify=False, timeout=30.0) as client:
         empty_years_count = 0
         for yr in range(current_year, 1999, -1):
             year_had_results = False
-            
+
             payload_dict = {
                 "language": "pt-br",
                 "codeCVM": code_cvm,
@@ -118,84 +124,107 @@ def fetch_fato_relevante(code_cvm: str) -> list:
                 "dateInitial": f"{yr}-01-01",
                 "dateFinal": f"{yr}-12-31",
                 "pageNumber": 1,
-                "pageSize": 120 
+                "pageSize": 120,
             }
-            
+
             page_number = 1
             total_pages = 1
-            
+
             while page_number <= total_pages:
                 payload_dict["pageNumber"] = page_number
-                payload_b64 = base64.b64encode(json.dumps(payload_dict).encode('utf-8')).decode('utf-8')
+                payload_b64 = base64.b64encode(
+                    json.dumps(payload_dict).encode("utf-8")
+                ).decode("utf-8")
                 url = f"https://sistemaswebb3-listados.b3.com.br/listedCompaniesProxy/CompanyCall/GetMaterialFacts/{payload_b64}"
-                
+
                 for attempt in range(3):
                     try:
                         resp = client.get(url, headers=headers)
                         resp.raise_for_status()
                         data = resp.json()
-                        
+
                         results = data.get("results", [])
                         page_info = data.get("page", {})
-                        
+
                         if not results:
                             break
-                            
+
                         year_had_results = True
                         for f in results:
                             link = f.get("urlSearch") or f.get("urlDocument")
                             if link:
-                                all_fatos[link] = f
-                                
+                                all_facts[link] = f
+
                         total_pages = page_info.get("totalPages", page_number)
                         break
                     except Exception as e:
-                        print(f"Erro ao buscar CVM {code_cvm} ano {yr} pág {page_number} (tentativa {attempt+1}/3): {e}")
+                        print(
+                            f"Error fetching CVM {code_cvm} year {yr} page {page_number} (attempt {attempt + 1}/3): {e}"
+                        )
                         if attempt == 2:
                             break
                         time.sleep(2)
                 page_number += 1
-            
+
             if year_had_results:
                 empty_years_count = 0
             else:
                 empty_years_count += 1
-                
+
             if empty_years_count >= 4:
-                print(f"    -> Parando busca retroativa para CVM {code_cvm}: 4 anos consecutivos sem registros ({yr} a {yr+3}).")
+                print(
+                    f"    -> Stopping retroactive search for CVM {code_cvm}: 4 consecutive years without records ({yr} to {yr + 3})."
+                )
                 break
-                
-    return list(all_fatos.values())
+
+    return list(all_facts.values())
+
 
 def sanitize_filename(name: str) -> str:
-    """Remove caracteres proibidos ou indesejados para nomes de arquivos."""
-    # Remove acentos
+    """Removes forbidden or unwanted characters from filenames."""
     s = name.strip().lower()
     replacements = {
-        'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
-        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
-        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
-        'ó': 'o', 'ò': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o',
-        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
-        'ç': 'c', 'ñ': 'n'
+        "á": "a",
+        "à": "a",
+        "â": "a",
+        "ã": "a",
+        "ä": "a",
+        "é": "e",
+        "è": "e",
+        "ê": "e",
+        "ë": "e",
+        "í": "i",
+        "ì": "i",
+        "î": "i",
+        "ï": "i",
+        "ó": "o",
+        "ò": "o",
+        "ô": "o",
+        "õ": "o",
+        "ö": "o",
+        "ú": "u",
+        "ù": "u",
+        "û": "u",
+        "ü": "u",
+        "ç": "c",
+        "ñ": "n",
     }
     for char, replacement in replacements.items():
         s = s.replace(char, replacement)
-    # Remove caracteres estranhos
-    s = re.sub(r'[^\w\s-]', '', s)
-    # Substitui espaços por underline para diferenciar do separador principal (hífen)
-    s = re.sub(r'[-\s]+', '_', s)
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[-\s]+", "_", s)
     return s[:85]
 
+
 def sanitize_foldername(name: str) -> str:
-    """Higieniza o nome da categoria para ser usado no nome do arquivo de forma segura."""
+    """Sanitizes the category name to be used safely in the folder name."""
     if not name:
         return "fato_relevante"
     return sanitize_filename(name)
 
+
 def parse_year_month(item_dict: dict) -> tuple:
-    """Extrai ano e mês de forma resiliente a partir das datas do item do B3."""
-    # Tenta obter de dateTimeReference (ex: "2026-03-03T00:00:00")
+    """Extracts year and month resiliently from the B3 item dates."""
     dt_ref = item_dict.get("dateTimeReference")
     if dt_ref and len(dt_ref) >= 7:
         try:
@@ -204,8 +233,7 @@ def parse_year_month(item_dict: dict) -> tuple:
                 return parts[0], parts[1]
         except Exception:
             pass
-            
-    # Tenta obter de dateReference (ex: "03/03/2026")
+
     d_ref = item_dict.get("dateReference")
     if d_ref:
         try:
@@ -214,50 +242,51 @@ def parse_year_month(item_dict: dict) -> tuple:
                 return parts[2], parts[1]
         except Exception:
             pass
-            
-    # Fallback para data atual
+
     now = datetime.now()
     return str(now.year), f"{now.month:02d}"
 
+
 def download_pdf(link: str, output_path: str) -> bool:
-    """Faz o download do PDF fazendo a requisição POST diretamente para o endpoint da CVM."""
-    match = re.search(r'ID=(\d+)', link)
+    """Downloads the PDF by making the POST request directly to the CVM endpoint."""
+    match = re.search(r"ID=(\d+)", link)
     if not match:
         return False
-        
+
     protocol = match.group(1)
     url = "https://www.rad.cvm.gov.br/ENET/frmExibirArquivoIPEExterno.aspx/ExibirPDF"
     payload = {
         "codigoInstituicao": "2",
         "numeroProtocolo": protocol,
         "token": "",
-        "versaoCaptcha": ""
+        "versaoCaptcha": "",
     }
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     }
-    
+
     try:
         with httpx.Client(verify=False) as client:
             resp = client.post(url, json=payload, headers=headers, timeout=40.0)
             resp.raise_for_status()
             data = resp.json()
-            
+
             pdf_b64 = data.get("d")
             if not pdf_b64:
                 return False
-                
+
             pdf_bytes = base64.b64decode(pdf_b64)
             with open(output_path, "wb") as f:
                 f.write(pdf_bytes)
             return True
     except Exception as e:
-        print(f"Erro ao baixar PDF do protocolo {protocol}: {e}")
+        print(f"Error downloading PDF for protocol {protocol}: {e}")
         return False
 
+
 def extract_pdf_text(pdf_path: str) -> str:
-    """Extrai todo o texto de um arquivo PDF usando a biblioteca pypdf."""
+    """Extracts all text from a PDF file using the pypdf library."""
     try:
         reader = PdfReader(pdf_path)
         text_parts = []
@@ -267,81 +296,80 @@ def extract_pdf_text(pdf_path: str) -> str:
                 text_parts.append(text)
         return "\n\n".join(text_parts)
     except Exception as e:
-        print(f"Erro ao extrair texto do PDF {pdf_path}: {e}")
+        print(f"Error extracting text from PDF {pdf_path}: {e}")
         return ""
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Scraper de fatos relevantes e comunicados da B3.")
-    parser.add_argument("--ticker", type=str, default=None, help="Executar apenas para um ticker específico")
+    parser = argparse.ArgumentParser(
+        description="Scraper for B3 material facts and market notices."
+    )
+    parser.add_argument(
+        "--ticker", type=str, default=None, help="Run only for a specific ticker"
+    )
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    
+
     if args.ticker:
         tickers = [args.ticker.upper()]
     else:
         tickers_path = os.path.join(script_dir, "tickers.txt")
         with open(tickers_path, "r") as f:
             tickers = [line.strip().upper() for line in f if line.strip()]
-        
-    print(f"Carregados {len(tickers)} tickers de interesse.")
-    
-    # Resolver o root do projeto (irpf-corr)
-    # src/irpf_b3/scraper.py -> src/irpf_b3 -> src -> irpf-corr
+
+    print(f"Loaded {len(tickers)} tickers of interest.")
+
     project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
     docs_pdf_dir = os.path.join(project_root, "docs", "pdf")
     os.makedirs(docs_pdf_dir, exist_ok=True)
-    print(f"Diretório base de documentos (flat): {docs_pdf_dir}")
-    
-    print("Buscando lista mestre de empresas da B3...")
+    print(f"Base document directory: {docs_pdf_dir}")
+
+    print("Fetching B3 company list...")
     all_companies = get_all_companies(script_dir)
-    
-    fatos_encontrados = []
-    
+
+    facts_found = []
+
     for ticker in tickers:
         cvm, trading_name = get_cvm_for_ticker(ticker, all_companies)
         if not cvm:
-            print(f"Ticker {ticker} não mapeado no GetInitialCompanies da B3.")
+            print(f"Ticker {ticker} not mapped in B3 database.")
             continue
-            
-        print(f"\n[+] Buscando Fatos Relevantes históricos de {ticker} (CVM: {cvm})...")
-        fatos = fetch_fato_relevante(cvm)
-        print(f"    -> Encontrados {len(fatos)} fatos históricos.")
-        
-        for f in fatos:
+
+        print(f"\n[+] Fetching historical facts for {ticker} (CVM: {cvm})...")
+        facts = fetch_material_facts(cvm)
+        print(f"    -> Found {len(facts)} historical facts.")
+
+        for f in facts:
             link = f.get("urlSearch") or f.get("urlDocument")
             if not link:
                 continue
-            
-            # Resgate do select/categoria, ano e mês reais
+
             category = f.get("category") or "Fato Relevante"
             type_str = f.get("type") or ""
             year, month = parse_year_month(f)
-            
-            # Higienização dos campos
+
             cat_clean = sanitize_foldername(category)
-            
-            # Definir categorias de interesse (expansível futuramente)
+
+            # Define categories of interest
             ALLOWED_CATEGORIES = [
-                'comunicado_ao_mercado',
-                'fato_relevante',
-                'aviso_aos_acionistas',
+                "comunicado_ao_mercado",
+                "fato_relevante",
+                "aviso_aos_acionistas",
             ]
-            
+
             if cat_clean not in ALLOWED_CATEGORIES:
                 continue
 
             type_clean = sanitize_filename(type_str.strip()) if type_str else ""
-            # Use subject; fallback to kind (B3 uses both interchangeably by category)
             raw_subject = (f.get("subject") or f.get("kind") or "").strip()
             subj_slug = sanitize_filename(raw_subject) if raw_subject else ""
-            
-            # Extrair ID de protocolo do link do documento
-            match_id = re.search(r'ID=(\d+)', link)
+
+            match_id = re.search(r"ID=(\d+)", link)
             doc_id = match_id.group(1) if match_id else "doc"
-            
-            # Pasta: docs/pdf/{company}/{category}/
-            # Arquivo: {year}-{month}-{type_str}-{subj_slug}-{doc_id}
+
+            # Folder: docs/pdf/{company}/{category}/
+            # File: {year}-{month}-{type_str}-{subj_slug}-{doc_id}
             parts = [year, month]
             if type_clean:
                 parts.append(type_clean)
@@ -351,49 +379,70 @@ def main():
             filename_base = "-".join(parts)
             pdf_filename = f"{filename_base}.pdf"
             txt_filename = f"{filename_base}.txt"
-            
+
             ticker_dir = os.path.join(docs_pdf_dir, ticker, cat_clean)
             os.makedirs(ticker_dir, exist_ok=True)
             pdf_path = os.path.join(ticker_dir, pdf_filename)
             txt_path = os.path.join(ticker_dir, txt_filename)
-            
+
             print(f"    [!]: {f.get('subject')} [{year}/{month}]")
-            
-            # Controle de Cache/Idempotência local
+
+            # Local Cache/Idempotency control
             has_pdf = False
             if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                print("        -> PDF já existe localmente. Pulando download.")
+                print("        -> PDF already exists locally. Skipping download.")
                 has_pdf = True
             else:
-                print("        -> Baixando PDF...")
+                print("        -> Downloading PDF...")
                 success = download_pdf(link, pdf_path)
                 if success:
-                    print("        -> PDF baixado com sucesso!")
+                    print("        -> PDF downloaded successfully!")
                     has_pdf = True
                 else:
-                    print("        -> Falha ao baixar PDF.")
-                    
+                    print("        -> Failed to download PDF.")
+
             if has_pdf:
                 has_text = False
                 if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
-                    # print("        -> Texto já existe localmente.")
                     has_text = True
+                    # Clean up PDF if it still exists
+                    if os.path.exists(pdf_path):
+                        try:
+                            os.remove(pdf_path)
+                        except Exception as e:
+                            print(f"        -> Error deleting PDF {pdf_path}: {e}")
                 else:
-                    print("        -> Extraindo texto do PDF...")
+                    print("        -> Extracting text from PDF...")
                     extracted_text = extract_pdf_text(pdf_path)
-                    
+
                     if extracted_text.strip():
-                        with open(txt_path, "w", encoding="utf-8") as txt_file:
-                            txt_file.write(extracted_text)
-                        print(f"        -> Texto extraído com sucesso! ({len(extracted_text)} caracteres)")
-                        has_text = True
+                        txt_saved = False
+                        try:
+                            with open(txt_path, "w", encoding="utf-8") as txt_file:
+                                txt_file.write(extracted_text)
+                            txt_saved = True
+                            print(
+                                f"        -> Text extracted successfully! ({len(extracted_text)} characters)"
+                            )
+                            has_text = True
+                        except Exception as e:
+                            print(f"        -> Failed to save txt: {e}")
+
+                        # Only delete PDF after txt is confirmed saved
+                        if txt_saved:
+                            try:
+                                os.remove(pdf_path)
+                            except Exception as e:
+                                print(f"        -> Error deleting PDF {pdf_path}: {e}")
                     else:
-                        print("        -> PDF sem texto legível extraível.")
-                
-                # Obter caminhos relativos ao projeto para salvar no JSON
+                        print("        -> PDF has no extractable text.")
+
+                # Get project relative paths for JSON storage
                 rel_pdf_path = os.path.relpath(pdf_path, project_root)
-                rel_txt_path = os.path.relpath(txt_path, project_root) if has_text else None
-                
+                rel_txt_path = (
+                    os.path.relpath(txt_path, project_root) if has_text else None
+                )
+
                 item = {
                     "ticker": ticker,
                     "trading_name": trading_name,
@@ -404,17 +453,18 @@ def main():
                     "month": month,
                     "link": link,
                     "pdf_path": rel_pdf_path,
-                    "txt_path": rel_txt_path
+                    "txt_path": rel_txt_path,
                 }
-                fatos_encontrados.append(item)
-            
-    # Salvar resultados consolidados no root do projeto
-    json_path = os.path.join(project_root, "fatos_relevantes_filtrados.json")
+                facts_found.append(item)
+
+    # Save consolidated results at the project root
+    json_path = os.path.join(project_root, "filtered_material_facts.json")
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(fatos_encontrados, f, ensure_ascii=False, indent=2)
-        
-    print(f"\nFinalizado! {len(fatos_encontrados)} fatos catalogados e extraídos historicamente desde 2002.")
-    print(f"Dados consolidados salvos em: {json_path}")
+        json.dump(facts_found, f, ensure_ascii=False, indent=2)
+
+    print(f"\nFinished! {len(facts_found)} facts cataloged and historically extracted.")
+    print(f"Consolidated data saved to: {json_path}")
+
 
 if __name__ == "__main__":
     main()

@@ -1,13 +1,37 @@
-"""Shared Ollama LLM client for corporate event classification.
-
-Decoupled from evaluate_bonuses.py to allow reuse across modules
-(scan_corporate_events, evaluate_bonuses, future pipelines).
-"""
-
+import csv
+import os
+import re
 import httpx
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "qwen2.5:7b"
+from irpf_b3.config import settings
+
+# 1. Modelagem com Pydantic (Validação e SSOT)
+class DocumentMetadata(BaseModel):
+    ticker: str
+    category: str
+    filename: str
+    filepath: str
+
+class ClassificationResult(BaseModel):
+    result: str
+    ticker: str
+    category: str
+    filename: str
+    filepath: str
+
+# 2. Filtro Determinístico
+CORPORATE_EVENT_PATTERN = re.compile(
+    r"bonifica|desdobrament|agrupament|subscri|split|inplit|fraç|frac",
+    re.IGNORECASE,
+)
+
+def filter_document_deterministically(content: str) -> bool:
+    """Return True if the text contains event-related keywords."""
+    return bool(CORPORATE_EVENT_PATTERN.search(content))
+
+# 3. Client LLM Refatorado
 MAX_TEXT_LENGTH = 100_000
 
 SYSTEM_PROMPT = """You are an assistant specialized in analyzing material facts (fatos relevantes) and market notices from companies listed on B3 (Brazilian Stock Exchange).
@@ -29,20 +53,12 @@ Decision (BONUS, EVENTS, MAYBE, or NO):"""
 
 VALID_TAGS = ["BONUS", "EVENTS", "MAYBE", "NO"]
 
-
 def classify_corporate_event(text: str) -> str:
-    """Send text to local Ollama instance for corporate event classification.
-
-    Args:
-        text: Raw document text to classify.
-
-    Returns:
-        One of BONUS, EVENTS, MAYBE, NO, ERROR, or UNKNOWN(...).
-    """
+    """Send text to local Ollama instance for corporate event classification."""
     snipped_text = text[:MAX_TEXT_LENGTH]
 
     payload = {
-        "model": MODEL_NAME,
+        "model": settings.ollama_model,
         "prompt": USER_PROMPT_TEMPLATE.format(extracted_text=snipped_text),
         "system": SYSTEM_PROMPT,
         "stream": False,
@@ -53,7 +69,7 @@ def classify_corporate_event(text: str) -> str:
 
     try:
         with httpx.Client(timeout=45.0) as client:
-            resp = client.post(OLLAMA_URL, json=payload)
+            resp = client.post(settings.ollama_url, json=payload)
             resp.raise_for_status()
             data = resp.json()
             result = data.get("response", "").strip().upper()
@@ -63,5 +79,5 @@ def classify_corporate_event(text: str) -> str:
                     return valid_tag
             return f"UNKNOWN ({result[:20]})"
     except Exception as e:
-        print(f"Error calling Ollama ({MODEL_NAME}): {e}")
+        print(f"Error calling Ollama ({settings.ollama_model}): {e}")
         return "ERROR"

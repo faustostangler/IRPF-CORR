@@ -13,7 +13,7 @@ from pathlib import Path
 import argparse
 import time
 
-from irpf_b3.llm_client import classify_corporate_event, MODEL_NAME
+from irpf_b3.legacy.llm_client import classify_corporate_event
 
 DEFAULT_TICKER = "WEGE3"
 
@@ -44,7 +44,7 @@ MEDIUM_RELEVANCE_CATEGORIES = {
 ALLOWED_CATEGORIES = HIGH_RELEVANCE_CATEGORIES | MEDIUM_RELEVANCE_CATEGORIES
 
 CSV_FIELDNAMES = [
-    "resultado",
+    "result",
     "ticker",
     "category",
     "filename",
@@ -52,25 +52,23 @@ CSV_FIELDNAMES = [
 ]
 
 
-def scan_corporate_events(
-    target_dir: str, extensions: tuple = (".txt",)
-) -> list[dict]:
+def scan_corporate_events(target_dir: str, extensions: tuple = (".txt",)) -> list[dict]:
     """Scan directory tree for documents matching corporate event keywords.
 
     Returns list of dicts with file metadata for downstream classification.
     """
     target_path = Path(target_dir)
     if not target_path.exists():
-        print(f"Erro: O diretório '{target_dir}' não existe.")
+        print(f"Error: The directory '{target_dir}' does not exist.")
         return []
 
     matched_files: list[dict] = []
     total_files = 0
     skipped_by_category = 0
 
-    print(f"Iniciando varredura em: {target_path}")
-    print(f"Extensões: {extensions}")
-    print(f"Categorias permitidas: {sorted(ALLOWED_CATEGORIES)}")
+    print(f"Starting scan in: {target_path}")
+    print(f"Extensions: {extensions}")
+    print(f"Allowed categories: {sorted(ALLOWED_CATEGORIES)}")
     print("-" * 60)
 
     for root, _, files in os.walk(target_path):
@@ -107,21 +105,19 @@ def scan_corporate_events(
                     print(f"[MATCH] {category}/{file}")
 
             except Exception as e:
-                print(f"Erro ao ler {filepath}: {e}")
+                print(f"Error reading {filepath}: {e}")
 
     print("-" * 60)
     print(
-        f"Varredura concluída! {len(matched_files)} arquivos encontrados "
-        f"de {total_files} totais "
-        f"({skipped_by_category} ignorados por categoria)."
+        f"Scan completed! {len(matched_files)} files found "
+        f"out of {total_files} total files "
+        f"({skipped_by_category} skipped by category)."
     )
 
     return matched_files
 
 
-def classify_matched_files(
-    matched_files: list[dict], output_csv: str
-) -> None:
+def classify_matched_files(matched_files: list[dict], output_csv: str) -> None:
     """Run LLM classification on each matched file and write results to CSV.
 
     Uses incremental append to survive interruptions.
@@ -135,15 +131,13 @@ def classify_matched_files(
                 for row in reader:
                     already_processed.add(row.get("filename", ""))
         except Exception as e:
-            print(f"Aviso ao carregar CSV existente: {e}")
+            print(f"Warning loading existing CSV: {e}")
 
-    pending = [
-        m for m in matched_files if m["filename"] not in already_processed
-    ]
+    pending = [m for m in matched_files if m["filename"] not in already_processed]
 
-    print(f"\n{len(already_processed)} já avaliados, {len(pending)} pendentes.")
+    print(f"\n{len(already_processed)} already evaluated, {len(pending)} pending.")
     if not pending:
-        print("Nada a processar.")
+        print("Nothing to process.")
         return
 
     csv_is_new = not os.path.exists(output_csv) or os.path.getsize(output_csv) == 0
@@ -160,11 +154,11 @@ def classify_matched_files(
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                     text = f.read()
             except Exception as e:
-                print(f"[{i}/{len(pending)}] Erro leitura {filepath}: {e}")
+                print(f"[{i}/{len(pending)}] Error reading {filepath}: {e}")
                 continue
 
             if not text.strip():
-                print(f"[{i}/{len(pending)}] Texto vazio: {item['filename']}")
+                print(f"[{i}/{len(pending)}] Empty text: {item['filename']}")
                 continue
 
             decision = classify_corporate_event(text)
@@ -172,7 +166,11 @@ def classify_matched_files(
             avg_time = elapsed / i
             remaining = len(pending) - i
             eta_secs = int(avg_time * remaining)
-            eta_str = f"{eta_secs // 60}m {eta_secs % 60}s" if eta_secs >= 60 else f"{eta_secs}s"
+            eta_str = (
+                f"{eta_secs // 60}m {eta_secs % 60}s"
+                if eta_secs >= 60
+                else f"{eta_secs}s"
+            )
             print(
                 f"[{decision}] [{i}/{len(pending)} {eta_str}] "
                 f"{item['category']}/{item['filename']}"
@@ -180,7 +178,7 @@ def classify_matched_files(
 
             writer.writerow(
                 {
-                    "resultado": decision,
+                    "result": decision,
                     "ticker": item["ticker"],
                     "category": item["category"],
                     "filename": item["filename"],
@@ -189,37 +187,37 @@ def classify_matched_files(
             )
             out.flush()
 
-    print(f"\nClassificação concluída. Resultados em: {output_csv}")
+    print(f"\nClassification completed. Results in: {output_csv}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Varre e classifica documentos de eventos corporativos."
+        description="Scans and classifies corporate event documents."
     )
     parser.add_argument(
         "--dir",
         type=str,
         default=None,
-        help="Diretório raiz para a busca (default: docs/pdf se --ticker não for informado)",
+        help="Root directory for the search (default: docs/pdf if --ticker is not provided)",
     )
     parser.add_argument(
         "--ticker",
         type=str,
         default=None,
-        help=f"Ticker específico de uma empresa (ex: {DEFAULT_TICKER})",
+        help=f"Specific company ticker (e.g.: {DEFAULT_TICKER})",
     )
     parser.add_argument(
         "--no-classify",
         dest="classify",
         action="store_false",
-        help="Desativa o envio de arquivos encontrados ao LLM para classificação.",
+        help="Disable sending found files to the LLM for classification.",
     )
     parser.set_defaults(classify=True)
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Caminho do CSV de resultados. Default: docs/pdf/scan_resultados.csv",
+        help="Path to the results CSV. Default: docs/pdf/scan_results.csv",
     )
 
     args = parser.parse_args()
@@ -234,7 +232,7 @@ def main() -> None:
     matched_files = scan_corporate_events(target_dir)
 
     if args.classify and matched_files:
-        output_csv = args.output or os.path.join("docs", "pdf", "scan_resultados.csv")
+        output_csv = args.output or os.path.join("docs", "pdf", "scan_results.csv")
         classify_matched_files(matched_files, output_csv)
 
 
