@@ -6,7 +6,7 @@ from pydantic import BaseModel, computed_field
 class Trade(BaseModel):
     """A single trade within a brokerage note."""
     ticker: str
-    quantity: int
+    quantity: Decimal
     unit_price: Decimal
     direction: Literal["BUY", "SELL"]
     allocated_fees: Decimal = Decimal("0")
@@ -33,6 +33,6 @@ class BrokerageNote(BaseModel):
 class Position(BaseModel):
     """Current holding position for a single ticker."""
     ticker: str
-    quantity: int = 0
+    quantity: Decimal = Decimal("0")
     average_cost: Decimal = Decimal("0")
     total_invested: Decimal = Decimal("0")
