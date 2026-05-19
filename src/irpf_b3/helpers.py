@@ -69,3 +69,55 @@ def progress(current: int, total: int, start_time: float = None) -> str:
         parts.append(f"[{fmt(elapsed)}+{fmt(remaining)}={fmt(total_time)}]")
 
     return " ".join(parts)
+
+
+def extract_keyword_context(
+    text: str,
+    pattern: re.Pattern,
+    context_chars: int = 500,
+) -> list[str]:
+    """Extract paragraph-sized context around each regex match.
+
+    Returns deduplicated snippets with `context_chars` chars
+    before and after each match, split on paragraph boundaries.
+    """
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return []
+        
+    spans = []
+    for m in matches:
+        start_idx = max(0, m.start() - context_chars)
+        end_idx = min(len(text), m.end() + context_chars)
+        
+        # Try to snap to paragraph boundaries \n\n
+        para_start = text.rfind("\n\n", start_idx, m.start())
+        if para_start != -1:
+            start_idx = para_start + 2  # skip \n\n
+            
+        para_end = text.find("\n\n", m.end(), end_idx)
+        if para_end != -1:
+            end_idx = para_end
+            
+        spans.append([start_idx, end_idx])
+        
+    # Merge overlapping spans
+    if not spans:
+        return []
+        
+    spans.sort(key=lambda x: x[0])
+    merged = [spans[0]]
+    for current in spans[1:]:
+        previous = merged[-1]
+        if current[0] <= previous[1]:
+            previous[1] = max(previous[1], current[1])
+        else:
+            merged.append(current)
+            
+    snippets = []
+    for start_idx, end_idx in merged:
+        snippet = text[start_idx:end_idx].strip()
+        if snippet:
+            snippets.append(snippet)
+        
+    return snippets

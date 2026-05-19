@@ -4,6 +4,7 @@ import time
 from irpf_b3.companies import get_filtered_companies
 from irpf_b3.documents import process_company_documents
 from irpf_b3.helpers import progress
+from irpf_b3.scanner import run_pipeline
 
 # --- GLOBAL CONSTANTS & CONFIGURATIONS ---
 TICKERS_FILENAME = "tickers.txt"
@@ -40,6 +41,10 @@ def main():
         print(f"Consolidated document data saved to: {json_path}")
     except Exception as e:
         print(f"Failed to save consolidated document data: {e}")
+
+    # --- STAGE 3: Corporate Event Pipeline ---
+    tickers = [comp['ticker'] for comp in companies]
+    run_pipeline(tickers, DOCS_PDF_DIR)
 
 if __name__ == "__main__":
     main()

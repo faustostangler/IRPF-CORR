@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     def allowed_categories(self) -> set:
         return self.high_relevance_categories | self.medium_relevance_categories
 
+    # Corporate Event Scanning (Step 3)
+    corporate_event_pattern_str: str = Field(
+        default=r"bonifica|desdobrament|agrupament|subscri|split|inplit|fraç|frac",
+        description="Regex stems for corporate event keyword matching"
+    )
+    corporate_event_context_chars: int = Field(
+        default=500,
+        description="Characters of context to extract around keyword matches"
+    )
+    llm_triage_timeout: float = Field(default=120.0)
+    llm_analysis_timeout: float = Field(default=300.0)
+    llm_max_text_length: int = Field(default=100_000)
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()

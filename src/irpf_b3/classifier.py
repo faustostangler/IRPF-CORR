@@ -53,14 +53,21 @@ Decision (BONUS, EVENTS, MAYBE, or NO):"""
 
 VALID_TAGS = ["BONUS", "EVENTS", "MAYBE", "NO"]
 
-def classify_corporate_event(text: str) -> str:
-    """Send text to local Ollama instance for corporate event classification."""
-    snipped_text = text[:MAX_TEXT_LENGTH]
+def call_ollama(
+    system_prompt: str,
+    user_prompt: str,
+    valid_tags: list[str] | None = None,
+    timeout: float = 45.0,
+) -> str:
+    """Generic Ollama API call with tag extraction.
 
+    If valid_tags is provided, returns the first valid_tag found in the response.
+    Otherwise, returns the full raw response string.
+    """
     payload = {
         "model": settings.ollama_model,
-        "prompt": USER_PROMPT_TEMPLATE.format(extracted_text=snipped_text),
-        "system": SYSTEM_PROMPT,
+        "prompt": user_prompt,
+        "system": system_prompt,
         "stream": False,
         "options": {
             "temperature": 0.0,
@@ -68,16 +75,32 @@ def classify_corporate_event(text: str) -> str:
     }
 
     try:
-        with httpx.Client(timeout=45.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             resp = client.post(settings.ollama_url, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            result = data.get("response", "").strip().upper()
+            result = data.get("response", "").strip()
 
-            for valid_tag in VALID_TAGS:
-                if valid_tag in result:
+            if not valid_tags:
+                return result
+
+            result_upper = result.upper()
+            for valid_tag in valid_tags:
+                if valid_tag in result_upper:
                     return valid_tag
-            return f"UNKNOWN ({result[:20]})"
+            return f"UNKNOWN ({result_upper[:20]})"
     except Exception as e:
         print(f"Error calling Ollama ({settings.ollama_model}): {e}")
         return "ERROR"
+
+def classify_corporate_event(text: str) -> str:
+    """Send text to local Ollama instance for corporate event classification."""
+    snipped_text = text[:MAX_TEXT_LENGTH]
+    user_prompt = USER_PROMPT_TEMPLATE.format(extracted_text=snipped_text)
+    
+    return call_ollama(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        valid_tags=VALID_TAGS,
+        timeout=45.0,
+    )
