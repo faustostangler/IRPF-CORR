@@ -1,16 +1,20 @@
 import base64
+import html
 import json
 import logging
 import os
 import re
 import subprocess
+import tempfile
 import time
 import random
 import concurrent.futures
 from datetime import datetime
+from urllib.parse import urljoin
 
 import httpx
 from pypdf import PdfReader
+
 
 # Suppress noisy warnings from pypdf about corrupted PDFs
 logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -248,6 +252,8 @@ def extract_text_from_file(file_path: str, ext: str, idx: int, total: int) -> st
         return _extract_text_pdf(file_path, idx, total)
     if ext == settings.ext_doc:
         return _extract_text_doc(file_path)
+    if ext == settings.ext_bin:
+        return _extract_text_bin(file_path, idx, total)
     return ""
 
 
@@ -347,6 +353,133 @@ def _extract_text_doc(doc_path: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _extract_input_value(html_content: str, input_name: str) -> str:
+    """Resiliently extracts the value of a named input from HTML content."""
+    # Try pattern: name="input_name" ... value="value"
+    pattern1 = rf'<input\s+[^>]*?name="{re.escape(input_name)}"[^>]*?value="([^"]*)"'
+    match = re.search(pattern1, html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+        
+    # Try pattern: value="value" ... name="input_name"
+    pattern2 = rf'<input\s+[^>]*?value="([^"]*)"[^>]*?name="{re.escape(input_name)}"'
+    match = re.search(pattern2, html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+        
+    # Try pattern with single quotes
+    pattern3 = rf"<input\s+[^>]*?name='{re.escape(input_name)}'[^>]*?value='([^']*)'"
+    match = re.search(pattern3, html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+        
+    pattern4 = rf"<input\s+[^>]*?value='([^']*)'[^>]*?name='{re.escape(input_name)}'"
+    match = re.search(pattern4, html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def _extract_form_action(html_content: str) -> str:
+    """Resiliently extracts the form action URL from HTML content."""
+    match = re.search(r'<form\s+[^>]*?action="([^"]*)"', html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"<form\s+[^>]*?action='([^']*)'", html_content, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _extract_text_bin(bin_path: str, idx: int, total: int) -> str:
+    """Extracts text from a .bin file which is an ASP.NET WebForms download page.
+    
+    It parses the HTML, extracts __VIEWSTATE and __VIEWSTATEGENERATOR,
+    makes a POST request to the download endpoint, detects the file type
+    (PDF or DOC), and delegates to the appropriate extractor.
+    """
+    try:
+        with open(bin_path, "r", encoding="utf-8", errors="ignore") as f:
+            html_content = f.read()
+    except Exception as e:
+        print(f"[-] Failed to read bin file {bin_path}: {e}")
+        return ""
+
+    # Parse form action, __VIEWSTATE, and __VIEWSTATEGENERATOR
+    action = _extract_form_action(html_content)
+    if not action:
+        # Check if the content is actually not HTML, maybe it's already a PDF/DOC but named .bin?
+        try:
+            with open(bin_path, "rb") as f:
+                file_bytes = f.read()
+            detected_type = _detect_file_type(file_bytes)
+            if detected_type == settings.ext_pdf:
+                return _extract_text_pdf(bin_path, idx, total)
+            elif detected_type == settings.ext_doc:
+                return _extract_text_doc(bin_path)
+        except Exception:
+            pass
+        return ""
+
+    action_url = html.unescape(action)
+    base_url = "https://www.rad.cvm.gov.br/ENET/"
+    absolute_url = urljoin(base_url, action_url.lstrip("./"))
+
+    viewstate = _extract_input_value(html_content, "__VIEWSTATE")
+    viewstategen = _extract_input_value(html_content, "__VIEWSTATEGENERATOR")
+
+    payload = {
+        "__VIEWSTATE": viewstate,
+        "__VIEWSTATEGENERATOR": viewstategen,
+    }
+
+    headers = {
+        "User-Agent": settings.b3_http_headers.get("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+    }
+
+    file_bytes = None
+    try:
+        print(f"[{worker_id()}] Downloading real file from bin: {os.path.basename(bin_path)}")
+        with httpx.Client(verify=False, timeout=settings.cvm_pdf_timeout) as client:
+            resp = client.post(absolute_url, data=payload, headers=headers)
+            resp.raise_for_status()
+            if len(resp.content) > 0:
+                file_bytes = resp.content
+    except Exception as e:
+        print(f"[-] Failed to download real file from WebForms: {e}")
+        return ""
+
+    if not file_bytes:
+        return ""
+
+    ext = _detect_file_type(file_bytes)
+    if ext not in (settings.ext_pdf, settings.ext_doc):
+        print(f"[-] Real file download from bin has unsupported format: {ext}")
+        return ""
+
+    text = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as temp_file:
+            temp_file.write(file_bytes)
+            temp_file_path = temp_file.name
+
+        try:
+            if ext == settings.ext_pdf:
+                text = _extract_text_pdf(temp_file_path, idx, total)
+            elif ext == settings.ext_doc:
+                text = _extract_text_doc(temp_file_path)
+        finally:
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[-] Error extracting text from resolved bin: {e}")
+
+    return text
 
 
 def _process_single_fact(args: tuple) -> dict | None:

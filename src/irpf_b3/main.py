@@ -17,8 +17,8 @@ def main():
 
     # Use a mock for debugging Step 2 as requested.
     # To use the real list later, just uncomment the get_filtered_companies line.
-    # companies = get_filtered_companies(tickers_path)
-    companies = [{"ticker": "WEGE3", "cvm": "5410", "trading_name": "WEG"}]
+    companies = get_filtered_companies(tickers_path)
+    # companies = [{"ticker": "WEGE3", "cvm": "5410", "trading_name": "WEG"}]
 
     total = len(companies)
     print(f"\nProcessing documents for {total} companies...")
