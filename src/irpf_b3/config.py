@@ -37,13 +37,16 @@ class Settings(BaseSettings):
 
     # Document file extensions
     ext_pdf: str = Field(default="pdf", description="Extension for PDF documents")
+    ext_docx: str = Field(default="docx", description="Extension for Word DOCX (ZIP) documents")
+    ext_xlsx: str = Field(default="xlsx", description="Extension for Excel XLSX documents")
+    ext_pptx: str = Field(default="pptx", description="Extension for PowerPoint PPTX documents")
     ext_doc: str = Field(default="doc", description="Extension for legacy OLE2 Word documents")
     ext_bin: str = Field(default="bin", description="Extension for unknown/binary documents")
 
     @property
     def supported_extensions(self) -> list[str]:
         """All supported download extensions, in detection-priority order."""
-        return [self.ext_pdf, self.ext_doc, self.ext_bin]
+        return [self.ext_pdf, self.ext_docx, self.ext_xlsx, self.ext_pptx, self.ext_doc, self.ext_bin]
 
     # Categories
     b3_allow_all_categories: bool = Field(default=True, description="Whether to allow all categories for exploratory debug")

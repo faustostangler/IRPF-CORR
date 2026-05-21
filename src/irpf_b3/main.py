@@ -27,7 +27,8 @@ def main():
     start_time = time.time()
     
     for idx, comp in enumerate(companies, 1):
-        print(f"\n{progress(idx, total, start_time)} Processing {comp['ticker']}...")
+        tickers_str = "/".join(comp["tickers"])
+        print(f"\n{progress(idx, total, start_time)} Processing {comp['trading_name']} ({tickers_str})...")
         facts = process_company_documents(comp, base_output_dir=DOCS_PDF_DIR)
         all_processed_facts.extend(facts)
         
@@ -43,8 +44,7 @@ def main():
         print(f"Failed to save consolidated document data: {e}")
 
     # --- STAGE 3: Corporate Event Pipeline ---
-    tickers = [comp['ticker'] for comp in companies]
-    run_pipeline(tickers, DOCS_PDF_DIR)
+    run_pipeline(companies, DOCS_PDF_DIR)
 
 if __name__ == "__main__":
     main()

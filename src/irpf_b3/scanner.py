@@ -344,24 +344,26 @@ def analyze_corporate_events(
     return all_reports
 
 
-def run_pipeline(tickers: list[str], base_dir: str):
-    """Orchestrates the 3-stage corporate event scanning pipeline for given tickers."""
-    print(f"\n--- Starting Corporate Event Scan Pipeline for {len(tickers)} tickers ---")
+def run_pipeline(companies: list[dict], base_dir: str):
+    """Orchestrates the 3-stage corporate event scanning pipeline for given companies."""
+    print(f"\n--- Starting Corporate Event Scan Pipeline for {len(companies)} companies ---")
     
     all_reports: list[CorporateEventReport] = []
     
-    for ticker in tickers:
-        ticker_dir = os.path.join(base_dir, ticker)
+    for comp in companies:
+        base_ticker = comp["base_ticker"]
+        tickers = comp["tickers"]
+        ticker_dir = os.path.join(base_dir, base_ticker)
         if not os.path.exists(ticker_dir):
-            print(f"Directory {ticker_dir} not found for {ticker}. Skipping.")
+            print(f"Directory {ticker_dir} not found for ticker {base_ticker}. Skipping.")
             continue
             
-        print(f"\n[{ticker}] Stage 3.1: Regex + Paragraph Extraction")
+        print(f"\n[{base_ticker} - {comp['trading_name']}] Stage 3.1: Regex + Paragraph Extraction")
         scan_hits = scan_documents_for_events(ticker_dir)
         if not scan_hits:
             continue
             
-        print(f"\n[{ticker}] Stage 3.2: LLM Triage")
+        print(f"\n[{base_ticker}] Stage 3.2: LLM Triage")
         triage_csv = os.path.join(ticker_dir, "scan_triage.csv")
         triaged_hits = triage_scan_hits(scan_hits, triage_csv)
         if not triaged_hits:
@@ -375,10 +377,15 @@ def run_pipeline(tickers: list[str], base_dir: str):
                 for row in reader:
                     triage_results[row.get("filename", "")] = row.get("result", "")
                     
-        print(f"\n[{ticker}] Stage 3.3: LLM Deep Analysis")
+        print(f"\n[{base_ticker}] Stage 3.3: LLM Deep Analysis")
         analysis_csv = os.path.join(ticker_dir, "corporate_events_report.csv")
         reports = analyze_corporate_events(triaged_hits, triage_results, analysis_csv)
-        all_reports.extend(reports)
+        
+        # Map the results back to each individual ticker associated with this company
+        for r in reports:
+            for ticker in tickers:
+                ticker_report = r.model_copy(update={"ticker": ticker})
+                all_reports.append(ticker_report)
         
     consolidated_json = os.path.join(base_dir, "corporate_events_consolidated.json")
     try:

@@ -147,21 +147,29 @@ def get_cvm_for_ticker(
 
 def get_filtered_companies(tickers_filepath: str) -> list[dict]:
     """
-    Obtains all B3 companies and filters according to the provided tickers list.
+    Obtains all B3 companies, filters them according to the provided tickers list,
+    and groups tickers under their base ticker symbol (e.g. ITUB for ITUB3/ITUB4) for SSOT.
     """
-
     print("Getting b3 companies...")
 
     all_companies = get_all_companies()
     user_tickers = get_user_tickers(tickers_filepath)
 
-    filtered_companies = []
+    grouped_companies = {}
 
     for ticker in user_tickers:
         cvm, trading_name = get_cvm_for_ticker(ticker, all_companies)
         if cvm:
-            filtered_companies.append(
-                {"ticker": ticker, "cvm": cvm, "trading_name": trading_name}
-            )
+            # Group by base ticker (ticker without trailing digits, e.g. ITUB)
+            base_ticker = re.sub(r"\d+$", "", ticker).upper()
+            if base_ticker not in grouped_companies:
+                grouped_companies[base_ticker] = {
+                    "base_ticker": base_ticker,
+                    "cvm": cvm,
+                    "trading_name": trading_name,
+                    "tickers": []
+                }
+            if ticker not in grouped_companies[base_ticker]["tickers"]:
+                grouped_companies[base_ticker]["tickers"].append(ticker)
 
-    return filtered_companies
+    return list(grouped_companies.values())

@@ -26,6 +26,7 @@ from irpf_b3.helpers import worker_id, sanitize_filename, sanitize_foldername, p
 # Magic byte signatures for file format detection (implementation detail of this module)
 _PDF_MAGIC = b"%PDF"
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0"  # Microsoft Compound Document (DOC/XLS/PPT)
+_ZIP_MAGIC = b"PK\x03\x04"         # ZIP / DOCX
 
 
 def parse_year_month(item_dict: dict) -> tuple[str, str]:
@@ -150,15 +151,57 @@ def fetch_company_documents(cvm_code: str, ticker: str = "") -> list[dict]:
 
 
 
+def _clean_document_bytes(file_bytes: bytes) -> bytes:
+    """Scans for magic headers (PDF, ZIP, OLE2) within the prefix of the file.
+
+    If found at a non-zero offset (e.g., due to portal output garbage),
+    strips the leading garbage bytes to yield a valid document file.
+    """
+    if not file_bytes:
+        return file_bytes
+
+    # Look for magic bytes in the first 4096 bytes
+    prefix = file_bytes[:4096]
+
+    indices = []
+    for magic in [_PDF_MAGIC, _ZIP_MAGIC, _OLE2_MAGIC]:
+        idx = prefix.find(magic)
+        if idx != -1:
+            indices.append(idx)
+
+    if indices:
+        earliest_idx = min(indices)
+        if earliest_idx > 0:
+            return file_bytes[earliest_idx:]
+
+    return file_bytes
+
+
 def _detect_file_type(file_bytes: bytes) -> str:
-    """Detects document format from magic bytes.
+    """Detects document format from magic bytes, after removing potential leading garbage.
 
     Returns:
-        File extension string: 'pdf', 'doc', or 'bin' for unknown formats.
+        File extension string: 'pdf', 'docx', 'xlsx', 'pptx', 'doc', or 'bin' for unknown formats.
     """
-    if file_bytes[:4] == _PDF_MAGIC:
+    cleaned = _clean_document_bytes(file_bytes)
+    if cleaned[:4] == _PDF_MAGIC:
         return settings.ext_pdf
-    if file_bytes[:4] == _OLE2_MAGIC:
+    if cleaned[:4] == _ZIP_MAGIC:
+        import io
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(cleaned)) as z:
+                names = z.namelist()
+                if "word/document.xml" in names:
+                    return settings.ext_docx
+                if "xl/workbook.xml" in names:
+                    return settings.ext_xlsx
+                if "ppt/presentation.xml" in names:
+                    return settings.ext_pptx
+        except Exception:
+            pass
+        return settings.ext_docx  # default ZIP fallback
+    if cleaned[:4] == _OLE2_MAGIC:
         return settings.ext_doc
     return settings.ext_bin
 
@@ -167,7 +210,7 @@ def download_document(download_url: str, search_url: str, output_dir: str, filen
     """Downloads a document using urlDownload (GET) with fallback to urlSearch (POST).
 
     After download, detects the actual file format via magic bytes and
-    saves with the correct extension (.pdf / .doc / .bin).
+    saves the cleaned bytes with the correct extension (.pdf / .doc / .bin).
 
     Returns:
         Tuple of (saved_file_path, detected_extension) or (None, None) on failure.
@@ -186,6 +229,7 @@ def download_document(download_url: str, search_url: str, output_dir: str, filen
     if not file_bytes:
         return None, None
 
+    file_bytes = _clean_document_bytes(file_bytes)
     ext = _detect_file_type(file_bytes)
     output_path = os.path.join(output_dir, f"{filename_base}.{ext}")
     with open(output_path, "wb") as f:
@@ -240,7 +284,7 @@ def _download_via_post(search_url: str) -> bytes | None:
 def extract_text_from_file(file_path: str, ext: str, idx: int, total: int) -> str:
     """Extracts text from a downloaded document based on its detected format.
 
-    Dispatches to pypdf for PDFs and antiword for legacy DOC files.
+    Dispatches to pypdf for PDFs, native ZIP parsing for DOCX/XLSX/PPTX, and antiword for legacy DOC files.
     Short-circuits if a non-empty .txt artifact already exists alongside the source file.
     """
     # Idempotency guard: skip CPU-heavy extraction if .txt already exists
@@ -250,6 +294,12 @@ def extract_text_from_file(file_path: str, ext: str, idx: int, total: int) -> st
 
     if ext == settings.ext_pdf:
         return _extract_text_pdf(file_path, idx, total)
+    if ext == settings.ext_docx:
+        return _extract_text_docx(file_path)
+    if ext == settings.ext_xlsx:
+        return _extract_text_xlsx(file_path)
+    if ext == settings.ext_pptx:
+        return _extract_text_pptx(file_path)
     if ext == settings.ext_doc:
         return _extract_text_doc(file_path)
     if ext == settings.ext_bin:
@@ -355,6 +405,113 @@ def _extract_text_doc(doc_path: str) -> str:
     return ""
 
 
+def _extract_text_docx(docx_path: str) -> str:
+    """Extracts text from a DOCX (ZIP) file using zipfile and xml parsing."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    try:
+        with zipfile.ZipFile(docx_path) as z:
+            names = z.namelist()
+            if "word/document.xml" not in names:
+                if "xl/workbook.xml" in names:
+                    return _extract_text_xlsx(docx_path)
+                if "ppt/presentation.xml" in names:
+                    return _extract_text_pptx(docx_path)
+                return ""
+            xml_content = z.read("word/document.xml")
+
+        root = ET.fromstring(xml_content)
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+        paragraphs = []
+        for p in root.findall(".//w:p", ns):
+            texts = [t.text for t in p.findall(".//w:t", ns) if t.text]
+            if texts:
+                paragraphs.append("".join(texts))
+        return "\n".join(paragraphs)
+    except Exception as e:
+        print(f"[-] Error extracting text from DOCX {docx_path}: {e}")
+        return ""
+
+
+def _extract_text_xlsx(xlsx_path: str) -> str:
+    """Extracts text from an XLSX (ZIP) file using zipfile and xml parsing."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    try:
+        texts = []
+        with zipfile.ZipFile(xlsx_path) as z:
+            names = z.namelist()
+            if "xl/workbook.xml" not in names and "xl/sharedStrings.xml" not in names:
+                if "word/document.xml" in names:
+                    return _extract_text_docx(xlsx_path)
+                if "ppt/presentation.xml" in names:
+                    return _extract_text_pptx(xlsx_path)
+                return ""
+
+            # Shared strings contains almost all text elements
+            if "xl/sharedStrings.xml" in names:
+                xml_content = z.read("xl/sharedStrings.xml")
+                root = ET.fromstring(xml_content)
+                ns = {"ns": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                for t in root.findall(".//ns:t", ns):
+                    if t.text:
+                        texts.append(t.text)
+            
+            # Also parse sheet files for any inline strings
+            for name in names:
+                if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"):
+                    xml_content = z.read(name)
+                    root = ET.fromstring(xml_content)
+                    ns = {"ns": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                    for t in root.findall(".//ns:t", ns):
+                        if t.text:
+                            texts.append(t.text)
+        return "\n".join(texts)
+    except Exception as e:
+        print(f"[-] Error extracting text from XLSX {xlsx_path}: {e}")
+        return ""
+
+
+def _extract_text_pptx(pptx_path: str) -> str:
+    """Extracts text from a PPTX (ZIP) file using zipfile and xml parsing."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    try:
+        texts = []
+        with zipfile.ZipFile(pptx_path) as z:
+            names = z.namelist()
+            if "ppt/presentation.xml" not in names:
+                if "word/document.xml" in names:
+                    return _extract_text_docx(pptx_path)
+                if "xl/workbook.xml" in names:
+                    return _extract_text_xlsx(pptx_path)
+                return ""
+
+            slide_names = sorted([name for name in names if name.startswith("ppt/slides/slide") and name.endswith(".xml")])
+            ns = {
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+                "p": "http://schemas.openxmlformats.org/presentationml/2006/main"
+            }
+            
+            for slide_name in slide_names:
+                xml_content = z.read(slide_name)
+                root = ET.fromstring(xml_content)
+                slide_texts = []
+                for t in root.findall(".//a:t", ns):
+                    if t.text:
+                        slide_texts.append(t.text)
+                if slide_texts:
+                    texts.append(" ".join(slide_texts))
+        return "\n".join(texts)
+    except Exception as e:
+        print(f"[-] Error extracting text from PPTX {pptx_path}: {e}")
+        return ""
+
+
 def _extract_input_value(html_content: str, input_name: str) -> str:
     """Resiliently extracts the value of a named input from HTML content."""
     # Try pattern: name="input_name" ... value="value"
@@ -399,7 +556,7 @@ def _extract_text_bin(bin_path: str, idx: int, total: int) -> str:
     
     It parses the HTML, extracts __VIEWSTATE and __VIEWSTATEGENERATOR,
     makes a POST request to the download endpoint, detects the file type
-    (PDF or DOC), and delegates to the appropriate extractor.
+    (PDF, DOCX, or DOC), and delegates to the appropriate extractor.
     """
     try:
         with open(bin_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -411,17 +568,30 @@ def _extract_text_bin(bin_path: str, idx: int, total: int) -> str:
     # Parse form action, __VIEWSTATE, and __VIEWSTATEGENERATOR
     action = _extract_form_action(html_content)
     if not action:
-        # Check if the content is actually not HTML, maybe it's already a PDF/DOC but named .bin?
+        # Check if the content is actually not HTML, maybe it's already a PDF/DOC/DOCX/XLSX/PPTX but named .bin?
         try:
             with open(bin_path, "rb") as f:
                 file_bytes = f.read()
+            file_bytes = _clean_document_bytes(file_bytes)
             detected_type = _detect_file_type(file_bytes)
-            if detected_type == settings.ext_pdf:
-                return _extract_text_pdf(bin_path, idx, total)
-            elif detected_type == settings.ext_doc:
-                return _extract_text_doc(bin_path)
-        except Exception:
-            pass
+            if detected_type != settings.ext_bin:
+                new_path = os.path.splitext(bin_path)[0] + f".{detected_type}"
+                with open(new_path, "wb") as f_out:
+                    f_out.write(file_bytes)
+                if os.path.exists(bin_path):
+                    os.remove(bin_path)
+                if detected_type == settings.ext_pdf:
+                    return _extract_text_pdf(new_path, idx, total)
+                elif detected_type == settings.ext_docx:
+                    return _extract_text_docx(new_path)
+                elif detected_type == settings.ext_xlsx:
+                    return _extract_text_xlsx(new_path)
+                elif detected_type == settings.ext_pptx:
+                    return _extract_text_pptx(new_path)
+                elif detected_type == settings.ext_doc:
+                    return _extract_text_doc(new_path)
+        except Exception as e:
+            print(f"[-] Error processing already-resolved bin file {bin_path}: {e}")
         return ""
 
     action_url = html.unescape(action)
@@ -455,27 +625,40 @@ def _extract_text_bin(bin_path: str, idx: int, total: int) -> str:
     if not file_bytes:
         return ""
 
+    file_bytes = _clean_document_bytes(file_bytes)
     ext = _detect_file_type(file_bytes)
-    if ext not in (settings.ext_pdf, settings.ext_doc):
+    if ext not in (settings.ext_pdf, settings.ext_docx, settings.ext_xlsx, settings.ext_pptx, settings.ext_doc):
         print(f"[-] Real file download from bin has unsupported format: {ext}")
         return ""
 
     text = ""
-    try:
-        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as temp_file:
-            temp_file.write(file_bytes)
-            temp_file_path = temp_file.name
+    output_dir = os.path.dirname(bin_path)
+    filename_base = os.path.splitext(os.path.basename(bin_path))[0]
+    real_file_path = os.path.join(output_dir, f"{filename_base}.{ext}")
 
+    try:
+        # Save the real resolved file to disk
+        with open(real_file_path, "wb") as f:
+            f.write(file_bytes)
+
+        # Delete the original .bin file since we resolved it
         try:
-            if ext == settings.ext_pdf:
-                text = _extract_text_pdf(temp_file_path, idx, total)
-            elif ext == settings.ext_doc:
-                text = _extract_text_doc(temp_file_path)
-        finally:
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
+            if os.path.exists(bin_path):
+                os.remove(bin_path)
+        except Exception:
+            pass
+
+        # Extract text from the resolved file
+        if ext == settings.ext_pdf:
+            text = _extract_text_pdf(real_file_path, idx, total)
+        elif ext == settings.ext_docx:
+            text = _extract_text_docx(real_file_path)
+        elif ext == settings.ext_xlsx:
+            text = _extract_text_xlsx(real_file_path)
+        elif ext == settings.ext_pptx:
+            text = _extract_text_pptx(real_file_path)
+        elif ext == settings.ext_doc:
+            text = _extract_text_doc(real_file_path)
     except Exception as e:
         print(f"[-] Error extracting text from resolved bin: {e}")
 
@@ -484,7 +667,7 @@ def _extract_text_bin(bin_path: str, idx: int, total: int) -> str:
 
 def _process_single_fact(args: tuple) -> dict | None:
     """Internal helper to process a single fact in parallel: download, extract text, and save."""
-    f, ticker, trading_name, base_output_dir, idx, total, start_time = args
+    f, base_ticker, cvm, tickers, trading_name, base_output_dir, idx, total, start_time = args
 
     download_url = f.get("urlDownload") or ""
     search_url = f.get("urlSearch") or ""
@@ -521,7 +704,7 @@ def _process_single_fact(args: tuple) -> dict | None:
 
     txt_filename = f"{filename_base}.txt"
 
-    ticker_dir = os.path.join(base_output_dir, ticker, cat_clean)
+    ticker_dir = os.path.join(base_output_dir, base_ticker, cat_clean)
     os.makedirs(ticker_dir, exist_ok=True)
     txt_path = os.path.join(ticker_dir, txt_filename)
 
@@ -533,12 +716,30 @@ def _process_single_fact(args: tuple) -> dict | None:
     else:
         doc_path, ext = None, None
 
-        # Tier 2: source file (.pdf/.doc/.bin) exists locally — extract only, skip download
+        # Tier 2: source file (.pdf/.docx/.doc/.bin) exists locally — extract only, skip download
         for candidate_ext in settings.supported_extensions:
             candidate_path = os.path.join(ticker_dir, f"{filename_base}.{candidate_ext}")
             if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
                 doc_path, ext = candidate_path, candidate_ext
                 break
+
+        # Check if local file is .bin but has another format content (e.g. PDF/DOCX/DOC)
+        if doc_path and ext == settings.ext_bin:
+            try:
+                with open(doc_path, "rb") as f_bytes_in:
+                    file_bytes = f_bytes_in.read()
+                file_bytes = _clean_document_bytes(file_bytes)
+                detected_ext = _detect_file_type(file_bytes)
+                if detected_ext != settings.ext_bin:
+                    # It's actually a PDF/DOCX/DOC/XLSX/PPTX! Let's save the cleaned bytes to new path and remove the old .bin file
+                    new_path = os.path.join(ticker_dir, f"{filename_base}.{detected_ext}")
+                    with open(new_path, "wb") as f_bytes_out:
+                        f_bytes_out.write(file_bytes)
+                    os.remove(doc_path)
+                    doc_path = new_path
+                    ext = detected_ext
+            except Exception as e:
+                print(f"[-] Error detecting/renaming existing .bin file {doc_path}: {e}")
 
         # Tier 3: nothing on disk — download the document
         if not doc_path:
@@ -553,7 +754,8 @@ def _process_single_fact(args: tuple) -> dict | None:
                         txt_file.write(extracted_text)
                     has_text = True
                     # Delete source file after successful extraction
-                    os.remove(doc_path)
+                    if os.path.exists(doc_path):
+                        os.remove(doc_path)
                 except Exception as e:
                     print(f"[{worker_id()} -] Failed to save txt for {txt_filename}: {e}")
             else:
@@ -568,9 +770,11 @@ def _process_single_fact(args: tuple) -> dict | None:
                 except Exception:
                     pass
 
-        print(f"[{worker_id()} {progress(idx, total, start_time)}] {ticker}/{cat_clean}/{txt_filename}")
+        print(f"[{worker_id()} {progress(idx, total, start_time)}] {base_ticker}/{cat_clean}/{txt_filename}")
         return {
-            "ticker": ticker,
+            "base_ticker": base_ticker,
+            "cvm": cvm,
+            "tickers": tickers,
             "trading_name": trading_name,
             "date": f.get("dateReference") or f.get("deliveryDate"),
             "subject": f.get("subject"),
@@ -591,7 +795,7 @@ def process_company_documents(company: dict, base_output_dir: str = None) -> lis
     Handles idempotency (skips if .txt already exists).
     
     Args:
-        company: Dict with keys 'ticker', 'cvm', 'trading_name'
+        company: Dict with keys 'base_ticker', 'cvm', 'trading_name', 'tickers'
         base_output_dir: Base directory for storing downloaded files
         
     Returns:
@@ -600,17 +804,18 @@ def process_company_documents(company: dict, base_output_dir: str = None) -> lis
     if base_output_dir is None:
         base_output_dir = settings.docs_output_dir
 
-    ticker = company["ticker"]
+    base_ticker = company["base_ticker"]
     cvm = company["cvm"]
     trading_name = company["trading_name"]
+    tickers = company["tickers"]
     
-    facts = fetch_company_documents(cvm, ticker=ticker)
-    print(f"\n{ticker} has {len(facts)} documents")
+    facts = fetch_company_documents(cvm, ticker=base_ticker)
+    print(f"\n{trading_name} (CVM {cvm}, Base Ticker {base_ticker}) has {len(facts)} documents")
 
     # Prepare arguments for parallel processing
     total = len(facts)
     start_time = time.time()
-    tasks = [(f, ticker, trading_name, base_output_dir, idx + 1, total, start_time) for idx, f in enumerate(facts)]
+    tasks = [(f, base_ticker, cvm, tickers, trading_name, base_output_dir, idx + 1, total, start_time) for idx, f in enumerate(facts)]
     processed_facts = []
 
     if not tasks:
